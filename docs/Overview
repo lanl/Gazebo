@@ -1,0 +1,29 @@
+		Gazebo Quickstart 
+
+
+1. Install and configure Gazebo
+
+ - intstall tarfile or RPM
+ - set GZBIN and GZHOME ENV vars in tcsh based user account
+ - edit GZHOME/gazebo.conf global configuration file
+
+2. Add and configure tests
+ 
+ - add new tests to GZHOME/test_exec directory
+ - edit the test specific gzconfig file in each test directory
+ - create a test suite in GZHOME/submit_configs directory
+
+3. Run Tests
+
+ - use atc_run command to submit a test suite
+ - use atc_testMgr to run atc_run in continuous mode
+
+
+4. Examine Results
+
+ - use atc_results to examine test results
+ - use atc_coverage to see system test coverage
+
+----- 
+
+gazebo@lanl.gov

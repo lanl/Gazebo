@@ -1,0 +1,202 @@
+
+     ========================================================
+             ***  Gazebo Acceptance Testing Component  ***
+     ========================================================
+                             November 2007
+				ver 1.0
+
+
+This document describes how to install, configure, and use the 
+Acceptance Testing Component (ATC) of the Gazebo software suite. 
+
+General Notes 
+=============
+
+In this document the following conventions are used:
+
+-  the words tests and jobs are used synonymously.
+-  testName denotes the name of the test.
+-  testHome is the directory where the ATC software has been installed.
+
+It is assumed that:
+
+-  testHome and testHome/bin are at the beginning of your $PATH.
+-  You have the appropriate compilers and libraries installed for your tests/jobs.
+-  Moab is installed, configured, and fully operational on the system you are
+   testing.
+
+
+Installation
+============
+
+- create a testHome directory (named anything you want),
+  put the tar file into it, and untar it.
+
+
+Configuration
+=============
+
+- edit the master configuration file (testHome/gezebo.conf), following the  
+  instructions above each of the variables in the file.  Run 
+       testHome/bin/gazebo seeConf to verify the values.
+  
+- edit (or create) a submission configuration file in the testHome/submit_configs
+  directory (called test_config_<segment_name>) which contains one line for
+  each unique test execution.  (Note that you can repeat the same test
+  configuration line with different test parameters at the end
+  of the line.)
+  Comments begin with a pound sign (#).  Comments and blank lines are ignored.
+
+  The following is the format of a test selection lines in this file.
+  Elements are blank-delimited in the line.
+ 
+    testName npes percent priority time_limit node_list test_executable "execution_parameters"
+ 
+    testName = Matches single-word directory name of test. MUST NOT 
+                contain "_" nor "."
+
+    percent   = percentage of time to run this test relative to other 
+                tests included in this file (which means in this set of
+                tests to be submitted together for execution)
+
+    priority  = integer indicating submission priority ( -1024 < p < 0 ), 
+                or - to use moab/torque (msub/qsub) default priority
+
+    time_limit = hh:mm:ss, job run time limit
+
+    node_list = *, to have  moab/torque (msub/qsub) select nodes to run 
+                on; or
+                -, to have atc_run select nodes so that nodes are 
+                used evenly, tiling jobs across all nodes; or
+                a comma-delimited list of node names such as XXXYYY,XXXYYY,
+                ..., where XXX=segment name, YYY=node numbers
+
+    test_executable = optional entry to use a different test run script
+                than the one specified in the test config file (CMD).  To 
+                skip this parameter enter it as a dash (-), which causes the 
+                default run script to be used.
+
+    execution_parameters = optional quoted list of command line parameters
+                used by the test executable (don't forget to quote this list 
+                if it contains spaces); if this is missing or a null string (""), 
+                the default is taken from the test config file, using the variable 
+                for test parameters (TEST_PARAMS).
+
+    example test selection lines for test "chkout" and test "test4": 
+              chkout 64 50 - 00:10:00 *
+              test4 64 50 - 01:00:00 * - "20 128"
+              test4 64 50 - 01:00:00 * runTest41 "20 128"
+
+
+Adding New Tests
+==================
+
+1. Run "testHome/bin/gazebo atc cad -t " followed by a unique test name.
+   This will create the new test directory (testHome/test_exec/testName)
+   and place template files into it along with a README.  Read this README.
+   Run "testHome/bin/gazebo atc cad -h" for full listing of options available.
+
+ Note: Tests are differentiated by the PE size and input parameters for reporting
+    purposes.  If a test is different for any other reason (e.g., mpi library or 
+    compiler) we recommend creating a different test name or use input parameters
+    to modify the behavior of the test.  
+
+2. Create and Edit a config file from the example file created in the directory
+   in step 1.  This file is mandatory. Edit the config variables as necessary. 
+
+3. Create and Edit a makeit script from the example file created in the directory
+   in step 1.  Edit the file as necessary to build your test. 
+
+4. Use the runit.example script created in step 1 as an example script to create 
+   a script to execute your test.  Edit it appropriately for this installation.
+   Name it appropriately and edit the config file so that the CMD variable is set 
+   to this file name.
+
+
+General Use:
+============
+
+  The following scripts are found in the testHome/bin directory.  The -h option
+  gives usage information for each script. 
+
+  atc_run (invoked via "gazebo atc run") - the main script for submitting jobs for 
+                execution. This script does a lot, so check out the usage info.  
+                It begins by reading the submission configuration file and submits 
+                the tests listed therein according to the options entered.  
+                Then it continues monitoring each job that it has submitted,
+                waiting for completion (or error conditions, etc.), and 
+                saves the output properly in the test results directory.
+                It can be asked to just submit the jobs and not monitor their 
+                progress (batch mode, -b option).
+  gzjobs -      displays current status of all jobs on the system in a nicely
+                readable format. (based on Moab commands only)
+  atc_cvg (invoked via "gazebo atc cvg") - generates reports of test run node 
+                coverage over all nodes in the system.  This script is very
+                useful during acceptance testing to ensure test coverage.
+  atc_results (invoked via "gazebo atc results) -  summarizes test completion 
+                status for tests whose output files are in the results directory.
+  atc_kill (invoked via "gazebo atc kill") - terminates selected jobs and cleans up
+                their working directories.
+  kill_my_jobs - script used to cancel all submitted jobs belonging to the current user.
+
+
+Building A Test
+==================-
+
+* cd to the testHome/test_exec/testName directory and run the makeit script.
+
+
+Running A Test
+=================
+
+* To execute one or more tests, run testHome/bin/atc run -u <segment_name>
+  This will read the testHome/submit_configs/test_config_<segment_name> file
+  and submit for execution the tests as defined therein.  See configuration
+  notes above about setting up that file.  Also use the -h option to see all
+  of the options available.
+
+* atc_run will let you know what's going on as it progresses (if not in batch mode), 
+  however, you may find it helpful to have an additional window connected to the 
+  same machine through which you can run checkjob, gzjobs, etc., to follow
+  how Moab is allocation resources and executing your jobs.
+
+Output
+======
+
+* The directory where all the output logs are placed will be displayed when the job 
+  finishes. In this directory, a file called <testName>.log should contain the final 
+  post-processed results for this job.  The Moab output files will also be stored
+  into that directory if the job completed normally.
+
+* Run "atc_results" to check the results of a test.  Use the -h option
+  to see additional options.
+
+* If you run in batch mode (atc_run -b ...) the Moab output files will not
+  be stored in the completed job's results directory.  Run "atc_clean" to move these
+  to their proper location.
+
+======= Debug Tips =======
+
+If a test keeps failing there are multiple places that are useful to look for ideas.
+Run atc_results to get a results summary. Use the "-f" or "-i" argument to see where the output 
+results are located. Run "atc_clean". Generally, either the output log or the DRM files can
+give a hint as to what went wrong.
+
+
+======== Contacts =========
+
+Please send e-mail to gazebo-team@lanl.gov with comments, suggestions, bugs, 
+collaboration ideas, etc.  We welcome your help in making this a reliable, useful, 
+and robust product.
+
+Thanks!
+
+---------------------------
+ 
+Please note that the Gazebo suite of software is copyrighted.
+
+     ========================================================
+
+
+
+

@@ -1,0 +1,47 @@
+Trend Data 
+==========
+
+Specific test/job related values can be recorded by Gazebo if they are save as trend data.
+Trend data is simply noted by printing a separate line for each trend data name to STDOUT.
+Multiple trend data values can be saved for every test run. This 
+data is defined by the application developer.
+
+
+Syntax:
+<td> name value [units]
+
+Explanation:
+<td> - tag or marker used by the Gazebo parser.
+# the next three lines are defined by the test developer
+name - char string, up to 32 chars. Name of the trend data item.   
+value - char string, up to 64 chars
+units - char string, up to 24 chars.
+
+Rules:
+- One name value entry per line.
+- The units field is optional.
+- The <td> tag must start at the beginning of the line.
+- Lines with a duplicate name entry will be ignored.
+- A Maximum of 4k entries are allowed per test. 
+- No spaces are allowed in any of the components. Gazebo expects at least three fields.
+- The value entry is a number
+- underlines are recommended as opposed to dashed in the name field. 
+
+Examples:
+<td> IB0_max_rate 250 MB/sec
+<td> IB1_max_rate 220 MB/sec
+<td> n-n_write_bw_max 100 MB/sec
+<td> phase_1_data 4700 
+<td> phase_2_data 8200 
+
+
+Querying Data:
+  Trend data can be viewed using the Gazebo atc_results script
+with the "-T" option. Data is harvested from the log file in the test results directory.
+More analysis tools are available to view trend data results. See
+gazebo_analyzeTD and gazebo_analyzeTD2.
+
+Splunk: 
+  As of release 1.4.4 all trend data is automatically harvested and place into a file called *.mysplunkdata in the
+final results directory. Describing Splunk is outside the scope of Gazebo, but for you splunkers this data is now
+created in native Splunk format. 

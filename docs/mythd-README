@@ -1,0 +1,5 @@
+mythd is the server side daemon for Gazebo. It is not used in Acceptance test mode, but must be
+installed and running in Gazebo production mode. mythd handles all the web interface requests and
+performs test data output handling on behalf a user running test software through gzrun.
+
+simply type "mythd --man" on a system where this is installed to see the documentation for mythd.

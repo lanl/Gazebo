@@ -1,0 +1,47 @@
+ ***  Basic install and setup instructions  ***
+
+Install:
+
+ From a tar file:
+
+ - untar the gazebo-x.tgz file into some <install directory> that is
+   mounted on BOTH the management node (a.k.a as a login node or a front end node)
+   and the compute nodes.
+
+ - set the environment variable GZHOME to <install directory>/gazebo-1.x
+
+ - set the environment variable GZBIN to $GZHOME/bin
+
+ - include both $GZBIN and $GZHOME in your search PATH
+
+ - run the gzinstall script that resides in the $GZBIN directory
+
+  NOTE - multiple instantiations of GZBIN are allowed.
+
+ RPM:
+
+  - On a DOE TOSS based machine this may already be installed. Contact your administrator.
+
+  - make a <install dir> directory where you want all your tests to run from
+    and set an environment variable GZHOME to that. This directory must be mounted on
+    BOTH the management node and all the compute nodes.
+
+  - set the environment variable GZBIN to the location where the Gazebo binaries are located. The
+    default location on the TOSS systems is /opt/gazebo-x.x/bin for instance.
+
+ - include both $GZBIN and $GZHOME in your search PATH
+
+ - run the gzinstall script that resides in the $GZBIN directory
+
+
+Setup:
+
+ - There are three files that must be edited before you can get started. Each are discussed
+   in the README and are documented in-line. As a heads up...
+
+     gazebo.conf - master config file that describes the system
+     submit_configs/test_config_<name> - test suite definition (define what tests to run)
+     test_exec/<test_name>/gzconfig - individual test configuration file, one per test directory. An example
+     exists in the /test_exec/simple directory.
+   
+
