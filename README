@@ -1,0 +1,268 @@
+
+     ========================================================
+                  ***  Getting Started with Gazebo ***
+     ========================================================
+                             January, 2013
+
+
+This document describes how to install, configure, and use 
+the Gazebo software suite. 
+
+General Comments 
+================
+
+   Gazebo is a suite of programs or scripts used to launch test jobs and then analyze their output. It is bundled
+ in three directories that include documentation (doc), all the scripts (bin), and some example configuration
+ files (include). The test jobs themselves are provided separately by the Gazebo user. A group of users can share
+ the Gazebo space or run a full instantiation of Gazebo themselves.
+
+In this document the following conventions are used:
+
+-  the words tests and jobs are used interchangeably.
+-  testName denotes the name of a particular test.
+-  GZHOME describes the directory where your Gazebo config and test files are installed. 
+-  GZBIN describes the directory where your Gazebo "binaries" are installed. 
+
+Prerequisites before running any program:
+
+-  the environment value GZBIN must be set to where the Gazebo binaries are installed.
+-  the environment value GZHOME must set to where your Gazebo tests and configuration files are installed. 
+-  both the GZBIN and GZHOME file systems must be accesible to all management and compute nodes.
+-  both GZBIN and GZHOME are in your search PATH.
+-  Moab is installed, configured, and fully operational on the system you are testing.
+
+Hints:
+
+- although you can debug your test within Gazebo it will probably be easier to get it working before
+  adding it.
+
+
+New Installation
+================
+
+option 1 (install complete gazebo release from tar file into personal space):
+ - run "tar -xvzf <tarfile>" within some installation directory <install dir>.
+ - GZHOME should be set to <install dir>/<some name>. For example, if you are
+   installing under /user/joe and the tar file is gazebo-1.2.x.tgz, GZHOME could be
+   /usr/joe/gazebo-1.2.x or it can be re-named to whatever.
+ - The GZBIN directory can be set to $GZHOME}/bin.
+
+option 2 (gazebo already installed from rpm or installed in some other shared space)
+ - set up your GZBIN to point to wherever the Gazebo binaries were installed
+ - set up your GZHOME to point to where you want your top level Gazebo dir to be. 
+ - run the gzinstall script that resides in the GZBIN directory.  
+
+
+Master Configuration
+====================
+
+- Edit the master configuration file ($GZHOME/gazebo.conf) and follow the instructions
+  for each of the variables.  Run gazebo_seeConf to proof these values. This file, once 
+  defined for a particular HPC system, is typically very similar for each user running Gazebo.
+
+- If you are using a database to store your data, edit the .dbcfg file in GZHOME accordingly.
+  This feature is generally not used anymore now that Splunk is  being used as the 
+  results analysis tool.
+
+
+Process to add a new test under Gazebo
+Pay special attention to the Notes!
+=======================================
+
+
+
+ Note: Tests are differentiated by four components for reporting and comparison purposes.
+   These four parts are: the test name, number of Nodes used, the number of processors used (PE's)  and
+   any test input parameters.  If other components effectively create a differennt test (e.g., mpi library or
+   compiler) consider making either a new test directory OR passing in and using a different set of 
+   input parameters. 
+
+ Note: Test names cannot contain a period "." or more than a single consecutive underline "_".
+
+- Place the test under the $GZHOME/test_exec directory. The new directory name will be the reference name
+  for the test. A link to the actual test directory from within $GZHOME/test_exec is acceptable.
+  You can run "$GZBIN/atc_addTest -t <testName>" to add a stub test directory.
+  Run "$GZBIN/atc_addTest -h" for a full listing of options available.  This will
+  create the new test directory ($GZHOME/test_exec/testName) and place template files into it.
+  You can, however, create these directories any way you would like. Cloning another test directory
+  works as well. This test directory must be rwx by at least the USER running Gazebo.
+
+-  Create and/or edit the file called "gzconfig" in the test directory. If there is not an
+   example file, one can be found in the include directory in the GZHOME space called runit.example.
+   This file is mandatory. Edit the configuration variables as appropriate. The most crucial variable is 
+   the CMD. This variable lets Gazebo know what to call to run your test program.
+   The name is arbitrary, but is often called something like runMytest, or something similar.
+
+ - Create and/or edit a wrapper script called "makeit" that will build your test.  You can use the
+   example script as a template if you'd like. This script will be called when the "-m" option is
+   used when running gazebo. However, it is highly recommended that you simply run this beforehand
+   to reduce the overhead time of rebuilding your test every time before launching.
+
+- The test must make it's own determination if it passed or failed. Therefore, either with an additional script
+   or within the executable itself, the test must print a line of the form "<results> PASS/FAIL [optional message]".
+   The optional message is useful for later test analysis on failed tests as it adds helpful hints as to why the 
+   test may have failed.
+
+ Note: When Gazebo launches a test (using either the atc_run or atc_testMgr scripts) it performs the msub on a job's behalf.
+       It then calls a wrapper program called setUpandRun which in turn will invoke the command (CMD) defined above. The msub
+       parameters for this test are defined in a testSuite that is read each time atc_run (or atc_TestMgr) is executed.
+       The CMD program typically will consist of a section to load any needed modules, one to call the test executable (often with
+       something like mpirun for parallel jobs) and then perform post processing result determination.
+
+ Note: At run time Gazebo will create a snapshot of the entire test directory (exculding ".f .c .o .h" files) in what's called the 
+       working_space and is referenced by the ENV variable GZ_RUNHOME.  The default location for the working_space directory is
+       directly under the ../testExec/testName directory. The test will run from here and the directory will be removed after the test completes.
+       If the test does not complete, this directory space is left in place. Running atc_clean (called by atc_testMgr too) will remove
+       old copies of this space. In addition, another subdirectory under GZ_RUNHOME called GZ_TMPLOGDIR is also created for temporary
+       log files being generated by Gazebo. The files being generated here by Gazebo are moved when the test finishes
+       (or is cleaned up by atc_clean) into the final results directory defined in the master gazebo config file. All STDOUT data generated
+       by the test is placed in a .log file here. A user can take advantage of this action if they want to save other data/files by 
+       just copying them in this directory or printing info to STDOUT. NEVER place any other file in this directory with a .log extension! 
+
+- Edit a Gazebo test suite definition file in the $GZHOME/submit_configs directory. The default name 
+  used is test_config_<segment_name>, but any name can be used.
+  The test suite configuration file contains one line for each unique test (see note above).
+  atc_run launches each test as it reads each line in order from the test suite file.  The format for each line
+  is defined in the example file which is useful as a template.  Lines with comments (#'s) are ignored.
+
+- An alpha version of "gzctl" GUI can be used to create and edit these test suites. It can
+  be quite useful if you have a large number of tests in the test_exec directory and you
+  want to load them into a test suite.  You will still have to edit the individual lines
+  though. Anyone want to have a go at improving this script??
+
+ Note:  It is recommeded that a new user run atc_run once with the "-h" option and then the "-E" option to see the what is available under the hood.
+
+General Use
+===========
+
+  The following scripts are some of the more commonly used scripts located in the GZBIN
+  directory.  The -h option gives usage information for each script. 
+
+  atc_run        The main script for submitting jobs.  This script does a lot,
+                 so check out the usage info via "atc_run -h".  It begins by reading the
+                 test suite configuration file and submits the tests listed therein according
+                 to the options entered.  Then it continues monitoring each job that it has
+                 submitted, waiting for completion (or error conditions, etc.), and saves the
+                 output properly in the test results directory.  It can be asked to just
+                 submit the jobs and not monitor their progress (batch mode, -b option).
+                 Each run of this script will create a log file in a directory called runlogdir
+                 in the Target_Results_Dir defined in the master gazebo.conf file
+
+  atc_testMgr    Using to repeatedly call atc_run thus keeping the system busy.
+
+  gzjobs         Displays current status of jobs on the system in a nice readable format.
+
+  atc_coverage   Generates a report of time utilized for each test over all nodes on the system.
+
+  atc_results    Summarizes test completion status for tests whose output files are in the
+                 results directory. Check out all the switches, they're useful.
+
+  atc_kill       Terminates selected jobs and cleans up their working directories.
+
+  kill_my_jobs   Cancels all submitted jobs belonging to the current user.
+
+  gzinstall      Creates a new GZHOME installation.
+
+  gzctl          GUI test suite controller/manager (alpha version).
+
+  atc_clean      Moves (DRM) output files to their final location in the results directory. When a test
+                 finishes running its DRM files are placed in the Target_Results_Dir. If atc_run is used
+                 in batch mode ("-b" option) this script must be run to move them into the final results directory.  	
+                 atc_clean will also take all files from the temp log directory of the working_space and
+                 move them to the final results directory.
+
+  scf_translator Used to translate old type test suite files to the new format.
+
+
+Building A Test
+===============
+
+- cd to the desired $GZHOME/test_exec/testName directory and run makeit. 
+
+
+Running Tests
+==============
+
+- To execute one or more tests, run $GZBIN/atc_run -u <segment_name>.  This will 
+  read the test definition suite ($GZHOME/submit_configs/test_config_<segment_name> file) and submit
+  a single instance of msub for each line that's defined therein. Run "atc_run -h" for more options.
+
+- atc_run will let you know what's going on as it progresses (if not in batch mode, "-b"), 
+  However, you may find it helpful to have an additional window connected to the same 
+  machine through which you can run checkjob, gzjobs, etc., to follow how Moab is
+  allocating resources and executing your jobs. Also, follow any files/data being created in the working_space
+  directory.
+
+- atc_testMgr is a program that is often used during system acceptance that continually keeps launching
+  atc_run. It's option list defines the loop delay time, how to back off submitting more jobs if the
+  target system has reached a certain level, and more.
+
+Output
+======
+
+- All test results are kept in a directory many levels down under the Target_Results_Dir defined in
+  the gazebo.conf file. The directory structure is somewhat self explainatory.
+  In this directory, a file called <testName>.log will contain any data sent to STDOUT 
+  during the test run.  The resource manager stderr and stdout files will also be placed into this
+  directory. Also, as noted above, any files placed in the GZ_TMPLOGDIR directory will get copied here.
+
+- If you run in batch mode, which is typical (atc_run with the "-b" flag) the resource manager stderr/stdout 
+  output files will still be located into the Target_results_directory until you run "atc_clean" which will move these files 
+  to the proper final results directory.
+
+- Run "atc_results" to summarize the test results.  Use the -h option to see additional options.
+  Use the "-p", "-f", or "-i" options to print the final directory names for tests that either
+  passed, failed, or are undetermined, respectively. FWIW, this script creates a file called RESULTS in the
+  final results directory containing the optional information the test printed on the "<results>" line.
+
+- Use "atc_coverage" to check node coverage of the test runs.
+
+- to record special data for analysis purposes refer to the TrendData.txt file in this doc directory.
+
+
+Pass/Fail Result Determination
+==============================
+
+Gazebo parses the <testName>.log file (all data sent to STDOUT during the run) at the completion of a run.
+This log file must contain the string "<results>" followed by PASS | FAIL | LEARNING" for Gazebo to determine the test results. 
+Considered Fail: if one or more occurrences of FAIL exist
+Considered Pass: if at least one occurrence of PASS exists and no fails 
+Considered Undefined: if the <results> indicator is LEARNING, or no <results> string exists and the file contains data 
+Considered Incomplete: if no output data exists 
+
+Use the atc_results script to create a synopsis of the testing results.
+
+
+
+Debug Tips 
+==========
+
+- The atc_run log file (atc_run.log) contains the job launch commands.
+This file is stored in the runlogdir directory in the target results directory defined
+at the start of the gazebo.conf file in GZHOME.
+
+- run the atc_results script with one of the appropriate flags to indicate where all the ouput data is
+located.
+
+- The aforementioned run log file will have a line that looks like "Final results directory
+for <jobId> is:".  Go to that directory.  The files of interest in here are: the <testName>.log
+file and the resource manager stderr and stdout files.  If that directory doesn't exist
+or the stderr/stdout files are not there, check in the top-level of the results directory
+(specified in gazebo.conf). 
+
+- A temporary log directory (tld) is created in the working space when a test runs. This directory
+name is printed to the screen when jobs are running without the "-b" flag and also gets noted 
+in the resource manager stdout file.  Look in this directory for the <testName>.log file, along
+with other test output files.  It is created in the working_space during run time.
+NOTE: This temporary working space is cleaned up after each run. It can be left around two ways. Either
+force atc_run not to do any cleanup with the preserve ("-p") option or leave a file named gz_preserve
+in the top level of the test directory to flag Gazebo not to clean up after this specific test.
+
+
+
+Contacts
+========
+
+Please send e-mail to gazebo@lanl.gov with comments, suggestions, bugs, collaboration
+ideas, etc.  We welcome your help in making this a reliable, useful, and robust product.
+Thanks!
