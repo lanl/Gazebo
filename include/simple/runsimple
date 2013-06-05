@@ -1,0 +1,14 @@
+#!/bin/tcsh
+#
+
+sleep 3
+@ i = 99999 
+while ($i)
+  @ v = $i * 4 / 3
+  @ i--
+end
+
+env
+echo " "
+echo "This test PASSED."
+exit

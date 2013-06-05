@@ -1,0 +1,23 @@
+#!/bin/tcsh
+
+# This file is an example skeleton for what can be used to
+# run a test. It may be renamed or you can use your own script.
+# The CMD variable in the gzconfig file must be set to the name of
+# either this file or the new file that will be called.
+
+# Pre processing commands here, if needed.
+# for example, module load commands
+
+#  ** Example call to run the test
+# Please DO NOT:
+# 1)  redirect STDIO or STDERR from the execution command.
+# 2)  use "time -p" as this will skew the overall timing results. 
+
+mpirun -np ${GZ_NPES} ${GZ_RUNHOME}/yourtest ${GZ_TEST_PARAMS}
+# Note: run "atc_run -E" to see description of env variables available.
+
+# Post processing commands here, if needed.
+# for example, result parsing script(s).
+
+# Please make sure this exit command exists
+exit

@@ -1,0 +1,76 @@
+## --- Gazebo Master Config File  --- ##
+
+# All entries in this file are of the format:
+#   name value
+
+# Results directory
+#-----------------
+# Only one location allowed 
+Target_Results_Dir /home/usr/lanlacc/results
+
+# Name of cluster being tested
+#-----------------
+#    Cluster - group of scaleable units managed by the same job
+#    scheduler or resource manager.
+#    This is the full name of the machine excluding the domain name
+
+Cluster_Name lobo 
+
+# Segment name list for this cluster
+#-----------------
+
+Cluster_Segments loa,lob
+
+# Segment hardware configuration 
+#-----------------
+# Each segment needs a separate line here of the format:
+#    Cluster_Segment_<name>  feature,number_of_nodes,cpus_per_node,gigabytes_mem_per_node,node_regex,node_start_num
+#
+#    <name> - the segment name that matches one of the names listed above in the Cluster_Segments list
+#    feature - a unique name that Moab maps to each scaleable unit or segment. By convention it should
+#    match the segment name. This is used to enable a user to target segment(s) under test.
+#    (hint: run "mdiag -t" and look at the end of the output in the "Node Features" area )
+#    node_regex - regex for matching names of all nodes for this segment of the cluster.
+#    node_start_num - the first node number in this segment (often 0 or 1)
+
+# Here are some examples that have worked on a few LANL machines
+# Of course, if the machine's configuration changes the corresponding lines will have to be tweaked
+# Lobo
+#Cluster_Segment_lob lob,136,16,32,(lo[a-b]{1})([0-9]{1,3}),1
+#Cluster_Segment_loa loa,136,16,32,(lo[a-b]{1})([0-9]{1,3}),1
+
+
+# Node naming convention elements
+#-----------------
+Segment_Name_Length 3
+Max_Node_Digits 3
+Node_Name_Delimiter
+
+
+# Flag indicating if node zero is included as a compute node
+#-----------------
+# (that is, node numbering is zero-based): yes or no
+Use_Node_Zero no
+
+# Define lifetime (days) of various logs. Probably good to leave short in a production 
+# setting, but longer for initial acceptance testing.
+runlog_lifetime 3
+
+
+# Selection of job dispatcher through which jobs are submitted for execution
+#-----------------
+# choices are:
+#    moab-torque moab scheduler, torque resource manager
+#    moab-slurm  moab scheduler, slurm resource manager
+#    moab-cle  moab scheduler using the Cray Linux Env
+
+Job_Dispatcher moab-torque
+
+# Indicate which site environment is present
+
+Site LANL
+#Site LLNL
+#Site SNL 
+
+## --- End of Gazebo Config File --- ##
+

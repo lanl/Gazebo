@@ -1,0 +1,50 @@
+# Gazebo global test configuration file
+#
+# This file is used by both web cgi-scripts and acceptance testing scripts
+# It should be copied to the test directory and edited appropriately
+#
+
+# Name of test owner (person to contact about this test)
+$test_config{'AUTHOR'} = "Gazebo team";
+
+# Very simple one-line description of what this test is/does
+$test_config{'DESCRIPTION'} = "This tests the basic infrastructure through a simple echo on the nodes specified.";
+
+# what version is the test
+$test_config{'VERSION'} = "1.0";
+
+# what compiler is used to build this test
+$test_config{'COMPILER'} = "";
+
+# what MPI is used to run this test
+$test_config{'MPILIB'} = "";
+
+# Specific job size limitations when a test only supports npes of this size. Null means any size.
+# Enter sizes as a comma-separated list
+$test_config{'JOBSIZE'} = "";
+
+# Default job size in number of processors
+$test_config{'NPES'} = "16";
+
+# Default time limit in hours:minutes:seconds
+$test_config{'TIMELIMIT'} = "00:02:00";
+
+# Target working directory where test will be moved to before execution.
+# This needs to be a directory that is shared globally across all the
+# compute nodes including the host where the test is launched.
+# A null value will place the test files in the user home space.
+# Only change this value if you want the test to run from some other directory.
+$test_config{'TARGET_WD'} = "";
+
+# Optional test parameters
+# Arbitrary string that contains anything you need to pass to the test executable.
+$test_config{'TEST_PARAMS'} = "";
+
+# name of file containing test execution command(s)
+$test_config{'CMD'} = "runsimple";
+
+# Labels for the trend data values selected
+@legend = ( );
+
+
+# End of Configurations

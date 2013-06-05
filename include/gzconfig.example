@@ -1,0 +1,58 @@
+# gzconfig: Gazebo test configuration file
+#
+# This file is used by both web cgi-scripts and acceptance testing scripts.
+# It should be copied to each specific test directory and edited appropriately.
+#
+
+# Name of test owner (person to contact about this test)
+$test_config{'AUTHOR'} = "John Expert";
+
+# Very simple one-line description of what this test is/does
+$test_config{'DESCRIPTION'} = "Simple description";
+
+# Set version of this test
+$test_config{'VERSION'} = "1.0";
+
+# Optionally define what compiler is used to build this test
+$test_config{'COMPILER'} = "gnu";
+
+# Optionally define what MPI is used to run this test
+$test_config{'MPILIB'} = "openmpi-gnu/1.5";
+
+# Optionally specify job size limitations when a test only supports npes of this size. Null means any size.
+# Enter sizes as a comma-separated list
+$test_config{'JOBSIZE'} = "";
+
+# Optionally set default job size in number of processors
+$test_config{'NPES'} = "64";
+
+# Optionally redefine the target working directory where the test will be moved to before running.
+# This needs to be a directory that is shared globally across all the
+# compute nodes including the host where the test is launched from.
+# A null value will use the default location which is to place this working space directory under
+# the test home directory. 
+$test_config{'TARGET_WD'} = "";
+
+# Optional flag to set fast copy mode for this test, set to FALSE by default
+$test_config{'FASTCOPY'} = "FALSE";
+
+# Optional space delimited string of test arguments available to the test.
+# Any string defined by the "pl" name in the test suite takes precedence.
+$test_config{'TEST_PARAMS'} = "15 524288";
+
+# Name of executable file called by Gazebo used to run this test.
+$test_config{'CMD'} = "runTest4";
+
+# Optional prolog script. If defined, will be called right before CMD 
+$test_config{'PROLOG'} = "runProlog";
+
+# Optional epilog script. If defined, will be called right after CMD 
+$test_config{'EPILOG'} = "runEpilog";
+
+# Optional blank delimited string of file and directory names used by "rsync -a"
+# to populate the TARGET_WD. Assume only that the CWD is the test home dir.
+# You should ALWAYS include gzconfig if using this feature.
+$test_config{'MV2WS'} = "";
+
+
+# End of gzconfig 

@@ -1,0 +1,32 @@
+# Test suite config file for submitting jobs/tests
+# ====================================
+#
+# Comments, ignore lines that begin with a pound sign (#)
+# The following is the format of the test selection lines in this file:
+#
+   # required fields:
+   #   name (test name) :: Matches directory name of test or job. MUST NOT contain a double
+   #                       underline "__" nor a period "."
+   #   pes              :: Number of cpu's or cores needed
+   #   nodes            :: Number of nodes needed
+   #   tl (time_limit)  :: hh:mm:ss or an integer value of seconds to set the run time limit
+   #
+
+   # optional fields:
+   #
+   #   count		:: number of times to submit this individual test
+   #   nl (node_list)   :: quoted, comma-delimited list of nodes. Default is let Moab select nodes.
+   #                       Otherwise, use a "-" to target nodes based on least used algorithm,
+   #                       called tiling across nodes.
+   #                       Must target nodes within the segment ("-u" parameter) selected.
+   #   exec             :: test executable. Overrides CMD variable in test specific config
+   #                       file (gzconfig) with this executable to call.
+   #   pl (test param list):: quoted string. set to TEST_PARAMS ENV variable which overrides test
+   #                       specific setting in config file (gzconfig).
+   #   margs (msub args) :: arbitrary quoted string added on to msub call
+
+
+name:=simple nodes:=2 pes:=8 tl:=00:01:00 count:=3
+name:=simple nodes:=2 pes:=8 tl:=00:01:00 exec:=runThisOne
+name:=test4 nodes:=2 pes:=16 tl:=00:04:00 pl:="20 524288"
+name:=hpl nodes:=4 pes:=64 tl:=02:30:00 nl:="rrz129,rrz130,rrz131,rrz132"

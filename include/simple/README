@@ -1,0 +1,7 @@
+Description:
+
+This test is used to verify that the basic infrastructure to 
+run a test is working. No MPI. 
+
+It just prints that the test PASSED to stdout.
+

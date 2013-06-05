@@ -1,0 +1,23 @@
+#!/bin/tcsh
+
+# This script is used as a wrapper to build the executables for this test.
+# Modify it anyway you like. In it's current state it will use
+# the COMPILER and MPILIB variables defined in the config file.
+
+# load the modules to build the test.
+# modules set the PATHs for libraries, compilers, etc. 
+set c = `grep COMPILER config | awk -F"=" '{print $2}' | sed s/\"//g | sed s/\;//`
+module load $c
+echo "using compiler $c"
+
+set m = `grep MPILIB config | awk -F"=" '{print $2}' | sed s/\"//g | sed s/\;//`
+module load $m
+echo "using mpilib $m"
+
+echo "building myTest"
+make clean
+setenv CC mpicc
+make
+
+# The End. Please leave in the exit command
+exit
