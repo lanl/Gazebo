@@ -1,0 +1,379 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+## -------------------------------------------------------------------- ##
+
+# utility to make a comma-separated list of spreadsheet data
+# called by gazebo_glean (and potentially others)
+# NOTE: expects $qcd_lup_home to be defined in the calling routine as the path
+#       where qcd checksums are kept
+# usage:   
+#   $spreadsheet_line = `spreadit "test_name" "test_run_data_directory_path"`;
+
+## -------------------------------------------------------------------- ##
+
+  my($list,$header,$test,@run_time,@trend_data,@log_data,$nnodes,@nada,$requested_npes,
+  	$tmp,$cu,$status,$npes,$name,$value,$i,$values,$line,@nodes,$path,$file);
+
+  $test = "$ARGV[0]";	# test name
+  $path = "$ARGV[1]";	# path to this test run directory
+  $cu   = "$ARGV[2]";	# optional machine name (for rr runs this is the cu number)
+  $requested_npes = "$ARGV[3]";	# match only the number of pes requested if present
+
+  $date = "$path";
+  $date =~ s/^.*\///;	# last dir is date of test run
+  $values = "";
+
+  if (! -e "$path" ) {	# just return if this test doesn't exist
+     print "";
+     exit;
+  }
+
+#  $header = "test_name,status,no_pes,nodes,real_time,user_time,sys_time,";
+  $header = "test_name,status,no_pes,nodes,run_time,";
+  if ( "$test" eq "qcd" ) {
+     $header =~ s/nodes/starting_node/;
+  }
+
+  # get execution times
+  if (open(FILE,"<$path/run_time")) {
+     $/ = "\n";
+     @run_time = <FILE>;
+     close(FILE);
+     for ( $i=0; $i<1; $i++ ) {		# limited now to first value only
+        ($name,$value) = split ' ',$run_time[$i];
+        $values .= "$value,";
+     }
+     if ( @run_time > 2 ) {
+        $npes = $run_time[3];		# run_time file also contains number of pes
+        chomp($npes);
+     } else {
+        $npes = "-";
+        $run_time[4] = "-";
+     }
+
+  } else {		# Unable to open $path/run_time for reading
+
+     $npes = "-";
+     $values .= "-,";
+     $run_time[4] = "-";
+  }
+     
+  if (( "$requested_npes" ne "0" ) && ( "$requested_npes" ne "" ) && 
+      ( "$npes" ne "$requested_npes" )) {
+     print "";
+     exit;
+  }
+
+  # if qcd, use nodes as starting node number 
+  if (( "$test" eq "qcd" ) && ( -e "$path/qcd.log" )) {
+     $nodes = `head $path/qcd.log | grep "<StartNode> "`;
+     $nodes =~ s/<StartNode> //;
+     chomp($nodes);
+     if ( "$nodes" eq "" ) { 
+        $nodes = `head $path/qcd.log | grep ":--: "`;
+        $nodes =~ s/:--: //;
+        if ( $nodes =~ /-/ ) {
+           $nodes =~ s/rr-//;
+           $nodes =~ s/mn1-1//;
+           chomp($nodes);
+#           $nodes = "n".$nodes."-001"; 
+        } else {
+           chomp($nodes);
+        }
+     }
+
+  } else {
+
+     $nodes = $run_time[4];		# run_time file also contains list of pes
+     chomp($nodes);
+     $nodes = node_list_shorten("$nodes","$cu");
+     $nodes =~ s/,/\#/g;
+     $nodes .= "<br><hr align=left width=100 size=1>";
+  }
+
+  # get trend data values
+  if ( -s "$path/trend_data" ) {
+     open(FILE,"<$path/trend_data") or 
+        die "*** Unable to open $path/trend_data for reading: $!\n";
+     $/ = "\n";
+     @trend_data = <FILE>;
+     close(FILE);
+     undef @nada;
+     for ( $i=0; $i<@trend_data; $i++ ) {
+        $tmp = "$trend_data[$i]";
+        chomp($tmp);
+        next if ( "$tmp" eq "" );
+        if (( $trend_data[$i] =~ /Command/ ) || ( $trend_data[$i] =~ /units=/ )) {
+#           @nada = split ' ',$trend_data[$i];
+           next;
+        }
+        ($name,$value) = split ' ',$trend_data[$i];
+        if ( "$value" ne "" ) {
+           $header .= "$name,";
+           $value =~ s/^(.*?\...).*$/$1/;
+           $values .= "$value,";
+        } else {
+           if ( defined @nada ) {
+              $header .= "$nada[0],";
+           } else {
+              if ( @trend_data > 1 ) {
+                 $header .= "Data_$i,";
+              } else {
+                 $header .= "Data_Value,";
+              }
+           }
+           $name =~ s/^(.*?\...).*$/$1/;
+           $values .= "$name,";
+        }
+     }
+
+  } else {
+     $header .= "Data_Value,";
+     $values .= "-,";
+  } 
+  chop($header);
+  $header .= "\n";
+  chop($values);
+  $values .= "\n";
+  # at this point values = real,user,sys,t1,t2,...,tn\n
+  # at this point header is complete
+
+  # get processors used and status of run from log file
+
+  if ( "$test" eq "qcd" ) { 
+
+     my $logtail = `tail $path/qcd.log`;
+     my $spg = "";
+     my $sprep = "";
+     my $sprop = "";
+     $status = "UNKNOWN";
+     if (( "$npes" eq "128" ) || ( "$npes" eq "512" )) {
+      if ( -e "$path/psums.pg.chksum" ) {
+        if ( $logtail =~ /PASSED: pg checksum output matches golden image/ ) {
+           $spg = "P";
+
+        } else {
+
+           $cksum = `cat $path/psums.pg.chksum`;
+           chomp($cksum);
+           my $good_cksum = `cat $main::qcd_lup_home/chksum.gi.pg-$npes`;
+           chomp($good_cksum);
+           if ( $cksum =~ /$good_cksum/ ) {
+              $spg = "P";
+           } else {
+              $spg = "F";
+           }
+        }
+        
+        if ( $logtail =~ /PASSED: prep checksum output matches golden image/ ) {
+           $sprep = "P";
+
+        } else {
+
+           $cksum = `cat $path/psums.prep.chksum`;
+           chomp($cksum);
+           $good_cksum = `cat $main::qcd_lup_home/chksum.gi.prep-$npes`;
+           chomp($good_cksum);
+           if ( $cksum =~ /$good_cksum/ ) {
+              $sprep = "P";
+           } else {
+              $sprep = "F";
+           }
+        }
+        
+        if ( $logtail =~ /PASSED: prop checksum output matches golden image/ ) {
+           $sprop = "P";
+
+        } else {
+
+           $cksum = `cat $path/psums.prop.chksum`;
+           chomp($cksum);
+           $good_cksum = `cat $main::qcd_lup_home/chksum.gi.prop-$npes`;
+           chomp($good_cksum);
+           if ( $cksum =~ /$good_cksum/ ) {
+              $sprop = "P";
+           } else {
+              $sprop = "F";
+           }
+        }
+
+        $status = "$spg"."$sprep"."$sprop";
+        if ( "$status" eq "PPP" ) { $status = "PASSED"; }
+#        if ( "$status" eq "FFF" ) { $status = "FAILED"; }
+
+      } else {
+        $status = "FAILED";
+      } 
+    }
+    $spg = `grep "Quiescence" $path/qcd.log`;
+    $sprep = `grep "Hardware problem" $path/qcd.log`;
+    if ( "$spg" ne "" ) { $status .= " Q"; }
+    if ( "$sprep" ne "" ) { $status .= " H"; }
+
+  } else {
+
+     $file = "$path/$test.log";
+     if (! -e "$file" ) {
+        $file = "$path/$test.out";
+     }
+     if ( open(FILE,"<$file")) {
+        undef $/;
+        $log_data = <FILE>;
+        close(FILE);
+   
+        if (( $log_data =~ /PASSED/ ) || ( $log_data =~ /Pass/ )) { 
+           $status = "PASSED";
+        } else {
+           if ( $log_data =~ /FAILED/ ) {
+              $status = "FAILED";
+           } else {
+              $status = "UNKNOWN";
+           }
+        }
+     } else {
+        $status = "UNKNOWN";
+     }
+  }
+
+  $list = "$header"."$test,$status,$npes,$nodes,$values";
+
+  print "$list";
+  exit;
+
+## -------------------------------------------------------------------- ##
+
+
+# routine to shorten a list of nodes
+# it expects a comma or blank separated list of nodes as input, along with
+# a cu number if the list contains cu numbers (eg., n08-032)
+# note, if blank-separated, be sure it is a quoted list
+sub node_list_shorten {
+   my ( $new,$old,$i,@nodes,$prev,$current,$start,$cu,$ncu,$xcu
+      );
+
+   $old = "$_[0]";      # comma or blank separted list of nodes
+   $cu  = "$_[1]";      # cu number
+   $new = "";           # resulting shortened list
+
+   if ( $old =~ /,/ ) {
+      @nodes = split ',',$old;
+   } else {
+      @nodes = split ' ',$old;
+   }
+
+   # use cu number if provided, else use that which is in first node number
+   if ( "$cu" ne "" ) {
+      $ncu = "n${cu}-";
+      if ( ! ( $old =~ /$ncu/ )) { $ncu = ""; }
+      if ( $cu =~ /-/ ) {
+         @cus = split '-',$cu;
+      }
+
+   } else {
+
+      if ( $nodes[0] =~ /-/ ) {
+         ($ncu,$i) = split '-',$nodes[0];
+         $ncu =~ s/n//;
+         $cu = "$ncu";
+         $ncu = "n${cu}-";
+
+      } else {
+         $ncu = "";
+      }
+   }
+
+   ($pcu,$prev) = split '-',$nodes[0];
+   $start = $prev;
+   for ( $i=1; $i<@nodes; $i++ ) {
+       $current = $nodes[$i];
+       ($ccu,$current) = split '-',$current;
+       if ((( $current - $prev ) == 1 ) && ( "$ccu" eq "$pcu" ))  {
+          $prev = $current;
+       } else {
+          if ( $cu =~ /-/ ) {
+             $ncu = "cu$pcu:";
+          } else {
+              $ncu = "cu$cu:";
+          }
+          if ( $prev > $start ) {
+             $new .= "$ncu${start}-$prev,";
+          } else {
+             $new .= "$ncu$prev,";
+          }
+          $start = $prev = $current;
+          $pcu = $ccu;
+       }
+   }
+   if ( $prev != $start ) {
+       if ( $cu =~ /-/ ) {
+          $ncu = "cu$pcu:";
+       } else {
+          $ncu = "cu$cu:";
+       }
+      $new .= "$ncu${start}-$prev,";
+   } elsif (! ( $new =~ /$ncu$current/ )) {
+      $new .= "$ncu$current,";
+   }
+   chop($new);
+   return ("$new");
+}
+
+## -------------------------------------------------------------------- ##
+
+1;
+

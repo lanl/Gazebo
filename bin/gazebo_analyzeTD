@@ -1,0 +1,164 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2010, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+#  - analyze trend data
+#
+# This program slurps up data from STDIN and calculates the
+# average and standard deviation of all values that match the 
+# given input argument.
+# It is intended to work with the output from "atc_results -T"
+# it also assumes the value to analyze is the next one in the list
+# following the input name.
+
+use strict;
+use Getopt::Std;
+
+our %options=();
+our %TDvalue=();
+my (%sum,%sumsq,%n);
+my %num_list;
+my $matchfound = 0;
+
+getopts("hvn:",\%options);
+
+# print usage if h option set
+if ($options{h}) { usage(); exit; }
+
+unless ($options{n}) {
+ print "Error: must define -n argument\n";
+ exit; 
+} 
+
+print "\n--> $options{n} <-- \n";
+
+while ( <STDIN> ) {
+  if ($_ =~ /$options{n}/ ) {
+    my @line = split(' ', $_);
+
+    my $e;
+    my $pos = 0;
+    foreach $e (@line) {
+
+       $pos++;
+       next unless ( $e eq $options{n} );
+       if ($options{v}) { print "matched: $_\n"; }
+       chomp $_;
+
+       $matchfound = 1;
+       # so that we are comparing apples to apples let's make
+       # values uniq to the test type name.nodesxPE's(parameter list)
+
+       my ($ttype, $jid, $leftover) = split /\) /, $_;
+       $ttype =~ s/^\s+//; 
+
+       $sum{$ttype} += $line[$pos];
+       $sumsq{$ttype} += $line[$pos] ** 2;
+       $n{$ttype} = $n{$ttype} + 1;
+       # store the numbers so that they can be tested for variance later
+       $TDvalue{$ttype}{$jid} = $line[$pos];
+       push (@{$num_list{$ttype}}, $line[$pos]);
+       last;
+    }
+  }
+}
+
+unless ($matchfound) {
+  print "no matches\n";
+  exit;
+}
+#print "db: @num_list\n";
+
+my %ans;
+my %mean;
+my $printnone = 1;
+# calculate the mean average and standard deviation
+foreach my $k ( keys (%sum) ) {
+  $ans{$k} =  sqrt(($sumsq{$k} - $sum{$k} ** 2 / $n{$k})/($n{$k} - 1));
+  $mean{$k} =  $sum{$k}/$n{$k};
+}
+
+foreach my $k ( sort keys (%sum) ) {
+  print "\n";
+  print "$k)\n";
+  print "  avg = $mean{$k}\n";
+  print "  stdev = $ans{$k}\n";
+  print "  number of values  = $n{$k}\n";
+
+  print "  --  results outside 2 standard deviations --\n";
+  foreach my $v ( keys %{$TDvalue{$k}} ) {
+    if (abs($TDvalue{$k}{$v} - $mean{$k}) > ($ans{$k} * 2) ) {
+      print "  $k) $v) : $TDvalue{$k}{$v}\n";
+      $printnone = 0;
+    }
+  }
+  print "  none\n" if ($printnone);
+}
+
+
+exit;
+
+
+sub usage {
+
+    print "\n\n";
+    print "Analyze Trend Data  \n";
+    print "usage: atc_results -t <testName> -T | $0 -n <trendData-name> [-v]  \n";
+    print "              -h help \n";
+    print "              -n 'name of Trend Data value to analyze'\n";
+    print "              -v 'print all Trend Data values that get matched (verbose)'\n";
+    print "\n\n";
+
+}

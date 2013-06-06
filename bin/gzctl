@@ -1,0 +1,793 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# note - Tk can also be found on some machines in /usr/lanl/bin/perl
+use Tk;
+
+@suite_choices = "";
+@case_choices = "";
+$gzhome = "$ENV{'GZHOME'}";
+
+# define main window
+$mw = MainWindow->new;
+$mw->title("gzctl");
+$mw->resizable(0, 0);
+
+# define mw title frame
+$frmTop = $mw->Frame(-bd => 2, -relief => 'ridge')->pack(-side => 'top', -fill => 'x', -pady => 3);
+$frmLabel = $frmTop->Frame(-bd => 2)->pack(-side => 'top', -fill => 'x');
+$lblPassword = $frmLabel->Label( -text => "Gazebo Test Controller")->pack;
+
+# define mw big frame - ListBoxes for suite and case
+$frmBig = $mw->Frame(-bd => 2, -relief => 'ridge')->pack(-side => 'top', -fill => 'x');
+$frmFilesLabels = $frmBig->Frame(-bd => 2)->pack( -side => 'top',-fill => 'x', -padx => 5);
+$frmFiles = $frmBig->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+$lblLocalFSuite = $frmFiles->Label(-text => "Suites")
+         ->pack(-side => 'left', -anchor => 'nw');
+$lstSuites = $frmFiles->Scrolled("Listbox", -takefocus => 0,
+        -scrollbars => "oe", -background => 'white', -width => 40)
+        ->pack(-side => 'left', -expand => 1, -padx => 5);
+
+$lblLocalFCase = $frmFiles->Label(-text => "Cases")
+         ->pack(-side => 'left', -anchor => 'nw');
+$lstCases = $frmFiles->Scrolled("Listbox", -takefocus => 0,
+        -scrollbars => "oe", -background => 'white', -width => 64)
+        ->pack(-side => 'right', -expand => 1, -padx => 5);
+
+# define mw buttons frame - suite and case control buttons
+$frmButtonLine = $mw->Frame(-bd => 2, -relief => 'ridge')
+        ->pack(-side => 'top', -fill => 'x', -pady => 3);
+$btnEditSuite = $frmButtonLine->Button(-text => "Edit Suite", -command => \&edit_suite)
+        ->pack( -side => 'right', -anchor => 'ne', -padx => 1);
+$btnViewCases = $frmButtonLine->Button(-text => "View Cases", -command => \&mw_pop_cases)
+        ->pack( -side => 'right', -anchor => 'ne', -padx => 1);
+$btnDeleteSuite = $frmButtonLine->Button(
+            -text => "Delete Selected Suite",
+            -command => \&delete_suite)
+            ->pack(-side => "left", -padx => 1);
+$frmButton2Line = $mw->Frame(-bd => 2, -relief => 'ridge')
+        ->pack(-side => 'top', -fill => 'x', -pady => 3);
+$btnDuplicateSuite = $frmButton2Line->Button(
+            -text => "Duplicate Selected Suite",
+            -command => \&duplicate_suite)
+            ->pack(-side => 'left', -anchor => 'se', -padx => 1);
+$btnCreateSuite = $frmButton2Line->Button(
+            -text => "Create New Suite",
+            -command => \&create_suite)
+            ->pack(-side => 'left', -anchor => 'se', -padx => 1);
+$entrySuite = $frmButton2Line->Entry()
+            ->pack( -side => 'left', -anchor => 'se', -expand => '1', -fill => 'x', -padx => 1);
+
+# define mw plat frame - ListBoxes for selecting platform to run on
+$frmPlat = $mw->Frame(-bd => 2, -relief => 'ridge')->pack(-side => 'top', -fill => 'x');
+$frmPlatLabels = $frmPlat->Frame(-bd => 2)->pack( -side => 'top',-fill => 'x', -padx => 5);
+$lblPlat = $frmPlatLabels->Label(-text => "Platforms")
+         ->pack(-side => 'left');
+$frmPlatBig = $frmPlat->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+
+$btnExit = $frmPlatBig->Button(-text => "Exit", -command => \&exit_all)
+        ->pack( -side => 'right', -anchor => 'ne', -padx => 1);
+
+$btnRunSuite = $frmPlatBig->Button(-text => "Run Suite", -command => \&run_suite)
+        ->pack( -side => 'right', -anchor => 'ne', -padx => 1);
+
+if (! -e ("$gzhome/gazebo.conf")) {
+    &user_error("gazebo.conf not found in \$GZHOME: $gzhome.  exiting.");
+    exit;
+}
+
+&mw_pop_suites(); # automatically populate suite list
+&mw_pop_plat();
+#$lstSuites->eventGenerate('<<ListboxSelect>>');
+#$lstSuites->bind('<<ListboxSelect>>' => &mw_pop_cases);
+
+MainLoop;
+
+# SUBROUTINES
+
+sub add_case {  # sew update sscase listbox with new entry
+    @sc = "";
+    @sc = $sewlstAllCases->curselection();  # returns an array of element id's
+    $tparams = "16 - - 00:20:00 *";
+    if ($#sc != -1) {  # something selected
+        foreach $scm (@sc) {
+            chomp $scm;
+            if ($scm == "0") {
+                $selectedAllcase = @scm[0]; chomp $selectedAllcase;
+                if ($selectedAllcase == "0") {
+                    $sewlstSSCases->insert("end", "$all_case_choices[0] $tparams");
+                } else {
+                    $sewlstSSCases->insert("end", "$all_case_choices[$selectedAllcase] $tparams");
+                }
+            } else {
+                $sewlstSSCases->insert("end", "$all_case_choices[$scm] $tparams");
+            }
+        }
+    } else {  # nothing selected
+        &user_error("Please select cases to add.");
+    }
+}
+
+sub cew_save {
+    # read values in case editor entry and update suite editor listbox - note, NOT SAVED YET!!
+
+    # validate each value in cew entryboxes
+    if (!(&v_nam($cewvnam))) { return; }
+    if (!(&v_npe($cewvnpe))) { return; }
+    if (!(&v_put($cewvput))) { return; }
+    if (!(&v_pri($cewvpri))) { return; }
+    if (!(&v_tim($cewvtim))) { return; }
+    if (!(&v_nod($cewvnod))) { return; }
+    if (!(&v_rna($cewvrna))) { return; }
+    if (!(&v_par($cewvpar))) { return; }
+
+    # if we got here, entries are valid.  change value in sew case select listbox
+    $cewcase_choices[$SSCi] = "$cewvnam $cewvnpe $cewvput $cewvpri $cewvtim $cewvnod $cewvrna $cewvpar";
+    $sewlstSSCases->delete(0, 'end');
+    $sewlstSSCases->insert('end', @cewcase_choices);
+    &destroy_cew;
+}
+
+sub destroy_cew { # close cew window
+    $cewentnam -> delete(0,'end');
+    $cewentnpe -> delete(0,'end');
+    $cewentput -> delete(0,'end');
+    $cewentpri -> delete(0,'end');
+    $cewenttim -> delete(0,'end');
+    $cewentnod -> delete(0,'end');
+    $cewentrna -> delete(0,'end');
+    $cewentpar -> delete(0,'end');
+    $cew->destroy;
+}
+
+sub destroy_sew { # close sew window
+     $sew->destroy;
+}
+
+sub remove_case {  # sew update sscase listbox with new removal
+    # ugly - have to explicitly handle first element selection!!
+    @ssc = "";
+    @ssc = $sewlstSSCases->curselection;  # items currently selected
+    if ($#ssc == -1) {  # nothing has been selected
+        &user_error("Please select cases to remove.");
+    } else {   # something has been selected
+        while (@ssc) {
+            $scr = pop(@ssc);  # process in reverse order since index changes IMMEDIATELY!
+            chomp $scr;
+            if ($scr == "0") {  # special handling for zero element selection case
+                print "$scr\n";
+                $sewlstSSCases->delete(0);
+            } else {
+                print "$scr\n";
+                $sewlstSSCases->delete($scr);
+            }
+        }
+    }
+}
+
+sub duplicate_suite {  # mw
+    &get_selected_suite(); 
+    if ($selectedSuite) {
+        $duplicateSuite = $selectedSuite . "_2";
+        if (-e "$gzhome/submit_configs/$duplicateSuite") {
+            &user_error("Suite already exists.  Please use another name.");
+            return;
+        }
+        `cp $gzhome/submit_configs/$selectedSuite $gzhome/submit_configs/$duplicateSuite`;
+        &mw_pop_suites();
+        $lstCases->delete(0, 'end');
+        @cursuites = $lstSuites->get(0, 'end');
+        $i = 0;
+        foreach $suite (@cursuites) {
+            chomp $suite;
+            if ($suite eq $duplicateSuite) {
+                $lstSuites->selectionSet($i);
+                &mw_pop_cases;
+                last;
+            }
+            $i++;
+        }
+    } else {
+        &user_error("Please select a suite to duplicate.");
+    }
+}
+
+sub mw_pop_plat {
+    @plat_choices = "";
+    @plat_choices = split (/ /, `grep '^Cluster_Segments' $gzhome/gazebo.conf`); shift @plat_choices;
+    chomp $plat_choices[$#plat_choices];
+    foreach $plat (@plat_choices) {
+        if ($plat) {  # handle empty case
+            $frmPlatBig->Radiobutton(-text => $plat, -variable => \$selectedPlat, -value => $plat)
+            ->pack(-side => 'left', -padx => 5);
+        }
+    }
+    return @plat_choices;
+}
+
+
+sub mw_pop_suites {
+    @suite_choices = "";
+    $suite_list = `ls -1 $gzhome/submit_configs | grep test_config | grep -v bak`; chomp $suite_list;
+    @suite_choices = split (/\n/, $suite_list);
+    $lstSuites->delete(0, "end");
+    $lstSuites->insert("end", @suite_choices);
+    return @suite_choices;
+}
+
+sub sew_pop_suitecases {
+    $sscaselist = `cat $gzhome/submit_configs/$selectedSuite`;  chomp $sscaselist;
+    @sscase_choices = split (/\n/, $sscaselist);
+    $sewlstSSCases->delete(0, "end");
+    $sewlstSSCases->insert("end", @sscase_choices);
+}
+
+sub v_nam {    # check sub argument is valid test name
+    $found = 0;
+    for $c (@all_case_choices) {
+       chomp $c;
+       if ($_[0] eq $c) { $found = 1; }
+    }
+    if (! $found) {
+       &user_error("test name $_[0] not found in test set\n");
+       return 0; # not valid
+    } else {
+       return 1; # valid
+    }
+}
+
+sub v_npe {    # check npe is integer between 1 and 5000
+    if (!($_[0] =~ /^-?\d+$/)) {  # not an integer
+        &user_error("Bad entry: $_[0]\nMust be an integer.");
+        return 0;
+    } else {
+        if ($_[0] >= 5001 || $_[0] <= 0) {
+            &user_error("Bad entry: $_[0]\nMust be between 1 and 5000.");
+            return 0;
+        } else {  # valid
+            return 1;
+        }
+    } 
+}
+
+
+sub v_put {    # check percent utilization is a dash or integer between 1 and 100
+    if (!($_[0] eq "-" || ( $_[0] =~ /^-?\d+$/ && $_[0] >= 1 && $_[0] <= 100))) {
+        &user_error("Bad entry: $_[0]\nThird param must be dash or integer between 1 and 100.");
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+sub v_pri {    # check priority is a dash or integer between -1024 and 0
+    if (!($_[0] eq "-" || $_[0] =~ /^-?\d+$/ && $_[0] >= -1024 && $_[0] <= 0)) {
+        &user_error("Bad entry: $_[0]\nFourth param must be a dash or an integer between -1024 and 0.");
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+sub v_tim {    # check time is integer between 1 and 86400
+    # check for valid format 00:00:00 or 00:00
+    # check if time contains ":", and if so, how many
+    if ($_[0] =~ ":") {
+        @vtime = (split /:/, $_[0]);
+        if ($#vtime == 1) { 
+            $vhour = 0; $vmin = $vtime[0]; $vsec = $vtime[1];
+            } elsif ($#vtime == 2) { 
+                $vhour = $vtime[0]; $vmin = $vtime[1]; $vsec = $vtime[2];
+            } else {
+                &user_error("Bad time entry - must be HH:MM:SS or MM:SS"); 
+                return 0;
+        }
+        if ($vhour >= 24 || $vmin >= 60 || $vsec >= 60 || $vhour =~ /\D/ || $vmin =~ /\D/ || $vsec =~ /\D/) {
+            &user_error("Bad time entry - must be HH:MM:SS or MM:SS");
+            return 0;
+        }
+        return 1; 
+    } else {   # must be in integer format or invalid
+        if (!($_[0] =~ /^-?\d+$/ && $_[0] <= 86400 && $_[0] >= 0)) {  # not an integer
+            &user_error("Bad entry: $_[0]\nFifth param must be an integer between 1 & 86400.");
+            return 0;
+        } else {
+            return 1;
+        }
+    }
+}
+
+sub v_nod {    # check node list is a * or -
+    if (!($_[0] eq "*" || $_[0] eq "-")) {
+        &user_error("Bad entry: $_[0]\nSixth param must be a * or -");
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+sub v_rna {    # check runit script name is either a dash or a string
+    if (!($_[0] eq "" || $_[0] eq "-" || $_[0] =~ /\D/)) {
+        &user_error("Bad entry: Runit script name must be blank, -, or string");
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+sub v_par {
+    # first and last characters must be "
+    if ($_[0] eq "" || (($_[0] =~ /^\"/ && reverse($_[0]) =~ /^\"/) || (!($_[0] =~ /\s/)))) {
+        return 1;
+    } else {
+        &user_error("Bad entry: Additional arguments must be in double-quotes or a single string");
+        return 0;
+    }
+}
+    
+sub sew_save {   # aka Save & Close
+    # save changes in suite editor to test_config_* file
+    # read values in suite editor listbox and overwrite test_config_* file with them
+    @scesave = "";
+    @scesave = $sewlstSSCases->get(0, 'end');
+    #print "\@scesave = @scesave\n";
+
+    # write temp file with @modlines
+    $tmpfile = "$gzhome/submit_configs/gztmpfile";
+    open(TMPFILE, ">$tmpfile");
+    $validflag = 1;
+    foreach $sline (@scesave) {
+
+        # do not validate comment lines
+        if ($sline =~ /^#/) { # if the first character is a #, then next 
+            print TMPFILE "$sline\n";
+            next;
+        }
+
+        # validate line of data
+        chomp $sline;
+        #print "sline is $sline\n";
+        @bits = split (/ /, $sline);
+
+        # check for minimum 6 parameters
+        if ($#bits <= 4) { # actually 5 (counting 0)
+            &user_error("Error - missing parameters in $sline");
+            $validflag = 0;  # not valid!
+          } else { # check for valid test name
+            if (!(&v_nam(@bits[0]))) {  # if not valid
+               $validflag = 0;
+            } else { # check for valid npe
+              if (!(&v_npe(@bits[1]))) {  # not an integer
+                  $validflag = 0;
+              } else { # check for valid percent utilization
+                if (!(&v_put(@bits[2]))) {
+                    $validflag = 0;
+                } else { # check for valid priority
+                  if (!(&v_pri(@bits[3]))) {
+                      $validflag = 0;
+                  } else { # check for valid time
+                    if (!(&v_tim(@bits[4]))) {  # not an integer
+                        $validflag = 0;
+                    } else { # check for valid node list
+                      if (!(&v_nod(@bits[5]))) {
+                          $validflag = 0;
+                      } else { # check for valid runit script name
+                        if (!(&v_rna(@bits[6]))) {
+                            $validflag = 0;
+                        } else { # check for valid additional parameters
+                          if (!(&v_par(@bits[7]))) {
+                              $validflag = 0;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }          
+        if (! $validflag) {  # remove tmpfile and bail
+            close(TMPFILE);
+           `rm $tmpfile`;
+            return;
+        } else {  # this line is valid
+            if ($sline) { print TMPFILE "$sline\n"; }
+        }
+    }
+    close(TMPFILE);
+
+    # move tmpfile to $selectedSuite
+    `mv $tmpfile $gzhome/submit_configs/$selectedSuite`;
+    if (Tk::Exists($cew)) { &destroy_cew; }
+    &destroy_sew;
+}
+
+
+sub mw_pop_cases {
+    @selected = $lstSuites->curselection;  # items currently selected
+    if ($#selected == -1 ) { # nothing selected
+        &user_error("Please select a suite.");
+        return;
+    }
+    $lstCases->delete(0, "end");
+    @caselistall = "";
+    foreach $suiteindex (@selected) {
+       $caselist = `cat $gzhome/submit_configs/$suite_choices[$suiteindex]`;  chomp $caselist;
+       @case_choices = split (/\n/, $caselist);
+       push @caselistall, @case_choices;
+       $lstCases->insert("end", sort @case_choices);
+    }
+    return @caselistall;
+}
+
+sub get_all_cases {
+    @all_case_choices = "";
+    @all_case_choices = split (/\n/, `ls -1 $gzhome/test_exec | sort`);
+    return @all_case_choices;
+}
+
+sub get_selected_plat {   # pull out of gazebo.conf
+    @SP = $lstPlat->curselection(); # returns index array
+    if ($#SS == -1) {
+        $selectedPlat = "";
+        return $selectedPlat;
+    }
+    $SPi = $SP[0]; # use first selection only
+    $selectedPlat = $plat_choices[$SPi]; chomp $selectedPlat;
+    return $selectedPlat;
+}
+
+sub get_selected_suite {
+    @SS = $lstSuites->curselection(); # returns index array
+    if ($#SS == -1) {
+        $selectedSuite = "";
+        return $selectedSuite;
+    }
+    $SSi = $SS[0]; # use first selection only
+    $selectedSuite = $suite_choices[$SSi]; chomp $selectedSuite;
+    return $selectedSuite;
+}
+
+sub get_selected_suites {
+    @SSvalues = "";
+    @SS = $lstSuites->curselection(); # returns index array
+    foreach $i (@SS) {
+        push @SSvalues, $suite_choices[$i];
+    }
+    return @SSvalues;
+}
+
+sub run_suite {  # mw
+    $selectedSuite = "";
+    @SSvalues = "";
+    &get_selected_suite;
+    if ($selectedSuite) {
+        if ($selectedPlat) {
+            &user_error("Test Suite Submitted");
+            print "$ENV{'GZBIN'}/atc_run -u $selectedPlat -C $selectedSuite\n";
+            `$ENV{'GZBIN'}/atc_run -u $selectedPlat -C $selectedSuite`;
+        } else {
+            &user_error("Please select a platform.");
+        }
+    } else {
+        &user_error("Please select a suite to run.");
+    }
+}
+
+sub edit_case {
+    @SC = $sewlstSSCases->curselection(); # index, will be only one value
+    @cewcase_choices = $sewlstSSCases->get(0, 'end');
+    if ($#SC == -1) {
+        &user_error("Please select a case.");
+        return;
+    }
+    $selectedsuitecase = $cewcase_choices[$SC[0]]; chomp $selectedsuitecase;
+   
+    # can not select comment lines
+    if ($selectedsuitecase =~ /^#/) {
+        &user_error("Please select a valid test case config line");
+        return;
+    }
+
+    $SSCi = $SC[0];  # first selection index
+
+    ($cnam, $cnpe, $cput, $cpri, $ctim, $cnod, $crna, $cpar) = split (/ /, $selectedsuitecase);
+    if ($cpar =~ /"/) {
+        $cpar = "";
+        # have to select all text between quotes
+        @cparr = split (/ /, $selectedsuitecase);
+        # throw away first seven items, keep the rest
+        shift @cparr; shift @cparr; shift @cparr; shift @cparr; shift @cparr; shift @cparr; shift @cparr;
+        foreach $c (@cparr) {
+            $cpar .= "$c ";
+        }
+        chop $cpar; chomp $cpar;  # not a typo
+    }
+
+    # open cew - new case editor window
+    $cew = MainWindow->new;
+    $cew->title("Case Editor");
+    $cew->resizable(0, 0);
+
+    # cew level frame - GUI title
+    $cewfrmTop   = $cew->Frame(-bd => 2, -relief => 'ridge')
+            ->pack(-side => 'top', -fill => 'x', -pady => 3);
+    $cewfrmLabel = $cewfrmTop->Frame(-bd => 2)->pack(-side => 'top', -fill => 'x');
+    $cewlbl      = $cewfrmLabel->Label( -text => "Gazebo Case Editor")->pack;
+
+    # cew level frame - frame for original value
+    $cewfrmOrig = $cew->Frame(-bd => 2, -relief => 'ridge')->pack(-side => 'top', -fill => 'x');
+
+    # define Selected Cases frame
+    $cewfrmSSCase = $cewfrmOrig->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblsc = $cewfrmSSCase->Label(
+            -text => "Current Value: ",
+            -padx => 2,
+            -pady => 2)
+            ->pack(-side => 'left');
+    $cewlblSSCase = $cewfrmSSCase->Label(
+            -text => "$selectedsuitecase",
+            -width => 35,
+            -anchor => 'w',
+            -relief => 'raised',
+            -padx => 2,
+            -pady => 2,
+            -background => 'white')
+            ->pack(-side => 'right');
+
+    # Modify test name
+    $cewfrmnam = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblnam = $cewfrmnam->Label( -text => "Test Name") ->pack(-side => 'left');
+    $cewentnam = $cewfrmnam->Entry(-width => 30, -textvariable => \$cewvnam) ->pack( -side => 'right');
+    $cewentnam -> delete(0, 'end');
+    $cewentnam -> insert('end', $cnam);
+
+    # Modify npe
+    $cewfrmnpe = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblnpe = $cewfrmnpe->Label( -text => "Number Processors") ->pack(-side => 'left');
+    $cewentnpe = $cewfrmnpe->Entry(-width => 30, -textvariable => \$cewvnpe) ->pack(-side => 'right');
+    $cewentnpe -> delete(0, 'end');
+    $cewentnpe -> insert('end', $cnpe);
+
+    # % utilization
+    $cewfrmput = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblput = $cewfrmput->Label( -text => "Percent Utilization") ->pack(-side => 'left');
+    $cewentput = $cewfrmput->Entry(-width => 30, -textvariable => \$cewvput) ->pack(-side => 'right');
+    $cewentput -> delete(0, 'end');
+    $cewentput -> insert('end', $cput);
+
+    # priority
+    $cewfrmpri = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblpri = $cewfrmpri->Label( -text => "Priority") ->pack(-side => 'left');
+    $cewentpri = $cewfrmpri->Entry(-width => 30, -textvariable => \$cewvpri) ->pack(-side => 'right');
+    $cewentpri -> delete(0, 'end');
+    $cewentpri -> insert('end', $cpri);
+
+    # timeout
+    $cewfrmtim = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlbltim = $cewfrmtim->Label( -text => "Timeout") ->pack(-side => 'left');
+    $cewenttim = $cewfrmtim->Entry(-width => 30, -textvariable => \$cewvtim) ->pack(-side => 'right');
+    $cewenttim -> delete(0, 'end');
+    $cewenttim -> insert('end', $ctim);
+
+    # node selection
+    $cewfrmnod = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblnod = $cewfrmnod->Label( -text => "Node Selection") ->pack(-side => 'left');
+    $cewentnod = $cewfrmnod->Entry(-width => 30, -textvariable => \$cewvnod) ->pack(-side => 'right');
+    $cewentnod -> delete(0, 'end');
+    $cewentnod -> insert('end', $cnod);
+
+    # runit script name
+    $cewfrmrna = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblrna = $cewfrmrna->Label( -text => "Runit Script Name") ->pack(-side => 'left');
+    $cewentrna = $cewfrmrna->Entry(-width => 30, -textvariable => \$cewvrna) ->pack(-side => 'right');
+    $cewentrna -> delete(0, 'end');
+    $cewentrna -> insert('end', $crna);
+
+    # addtional parameters
+    $cewfrmpar = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewlblpar = $cewfrmpar->Label( -text => "Additional Params") ->pack(-side => 'left');
+    $cewentpar = $cewfrmpar->Entry(-width => 30, -textvariable => \$cewvpar) ->pack(-side => 'right');
+    $cewentpar -> delete(0, 'end');
+    $cewentpar -> insert('end', $cpar);
+
+    $cewfrmbtn = $cew->Frame(-bd => 2)->pack( -side => 'top', -fill => 'x', -padx => 2);
+    $cewbtnSave = $cewfrmbtn->Button(
+            -text => "Done",
+            -width => 16,
+            -command => \&cew_save)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+    $cewbtnExit = $cewfrmbtn->Button(
+            -text => "Cancel",
+            -width => 16,
+            -command => \&destroy_cew)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+}
+
+sub edit_suite {
+    &get_selected_suite;
+    if (! $selectedSuite) {
+        &user_error("Please select a suite.");
+        return;
+    }
+
+    # open sew - new suite editor window
+    $sew = MainWindow->new;
+    $sew->title("Suite Editor");
+    $sew->resizable(0, 0);
+
+    # sew level frame - GUI title
+    $sewfrmTop   = $sew->Frame(-bd => 2, -relief => 'ridge')
+            ->pack(-side => 'top', -fill => 'x', -pady => 3);
+    $sewfrmLabel = $sewfrmTop->Frame(-bd => 2)->pack(-side => 'top', -fill => 'x');
+    $sewlbl      = $sewfrmLabel->Label( -text => "Gazebo Suite Editor")->pack;
+    
+    # sew level frame - Big frame for center content
+    $sewfrmBig = $sew->Frame(-bd => 2, -relief => 'ridge')->pack(-side => 'top', -fill => 'x');
+
+    # define Selected Suite cases listbox frame
+    $sewfrmSSCases = $sewfrmBig->Frame(-bd => 2)->pack( -side => 'left', -fill => 'x', -padx => 2);
+    $sewlblSSCases = $sewfrmSSCases->Label(
+            -text => "$selectedSuite",
+            -relief => 'raised',
+            -padx => 2,
+            -pady => 2,
+            -background => 'white')
+            #->pack(-side => 'top', -anchor => 'nw');
+            ->pack(-anchor => 'nw');
+    $sewlstSSCases = $sewfrmSSCases->Scrolled("Listbox", -selectmode => 'extended', -takefocus => 0,
+            -scrollbars => "se", -background => 'white', -width => 40)
+            ->pack(-side => 'left', -padx => 5);
+
+    # Populate Selected Suite Case list
+    $sewlstSSCases->delete(0, "end");
+    &sew_pop_suitecases;
+
+    # define add and remove buttons
+    $sewbtnAddCase = $sewfrmSSCases->Button(
+            -text => "<----    Add    <----", 
+            -width => 16,
+            -command => \&add_case)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+    $sewbtnRemoveCase = $sewfrmSSCases->Button(
+            -text => "--->  Remove  --->",
+            -width => 16,
+            -command => \&remove_case)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+    $sewbtnEditCase = $sewfrmSSCases->Button(
+            -text => "Edit Case",
+            -width => 16,
+            -command => \&edit_case)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+    $sewbtnSave = $sewfrmSSCases->Button(
+            -text => "Save & Close",
+            -width => 16,
+            -command => \&sew_save)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+    $sewbtnExit = $sewfrmSSCases->Button(
+            -text => "Cancel",
+            -width => 16,
+            -command => \&destroy_sew)
+            ->pack(-side => "top", -anchor => 'w', -padx => 1);
+
+    # define All Cases listbox frame
+    $sewfrmAllCases = $sewfrmBig->Frame(-bd => 2)->pack( -side => 'left', -fill => 'x', -padx => 2);
+    $sewlblAllCases = $sewfrmAllCases->Label(-text => "List of All Tests")->pack(-anchor => 'nw');
+    $sewlstAllCases = $sewfrmAllCases->Scrolled("Listbox", -selectmode => 'extended', -takefocus => 0,
+            -scrollbars => "oe", -background => 'white', -width => 30)
+            ->pack(-side => 'left', -padx => 5);
+
+    # View All Cases listbox
+    $sewlstAllCases->delete(0, "end");
+    &get_all_cases;
+    $sewlstAllCases->insert("end", @all_case_choices);
+}
+
+sub create_suite { # mw
+    $newsuitename = $entrySuite->get(); chomp $newsuitename;
+    $newsuitename =~ s/ //g; $newsuitename =~ s/test_config_//g;
+    if ($newsuitename) {
+        `touch $gzhome/submit_configs/test_config_$newsuitename`;
+        $entrySuite->delete(0, 'end');
+        &mw_pop_suites();  # update list with new entry
+        $lstCases->delete(0, 'end');
+        @cursuites = $lstSuites->get(0, 'end');
+        $i = 0;
+        foreach $suite (@cursuites) {
+            chomp $suite;
+            $suite =~ s/ //g; $suite =~ s/test_config_//g;
+            if ($suite eq $newsuitename) { 
+                $lstSuites->selectionSet($i);
+                last;
+            }
+            $i++;
+        }
+    } else {
+        &user_error("Please specify new suite name.");
+        return;
+    }
+    &edit_suite;
+}
+
+sub delete_suite { # mw
+    &get_selected_suite;
+    if ($selectedSuite) {
+        $targetfile = "$gzhome/submit_configs/$selectedSuite";
+        #print "deleting $targetfile...\n";
+        if (-e $targetfile) { `rm $gzhome/submit_configs/$selectedSuite`; }
+        &mw_pop_suites();
+    } else {
+        &user_error("Please select a suite to delete.");
+    }
+}
+
+sub user_error {
+    # text is argument 
+    require Tk::Dialog;
+    $answer = $mw->Dialog(-title => 'Error',
+                          -text => $_[0],
+                          -default_button => 'Ok', -buttons => [ 'Ok'],
+                          -bitmap => 'error' )->Show(  );
+    if ($answer eq 'Ok') {
+        return;
+    }
+}
+
+sub exit_all {
+    if (Tk::Exists($cew)) { &destroy_cew; }
+    if (Tk::Exists($sew)) { &destroy_sew; }
+    exit;
+}

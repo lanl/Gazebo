@@ -1,0 +1,150 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+#ATC terminate a job and clean up that job's working directory
+
+use Getopt::Std;
+our %opts;
+$opts{j} = "";
+getopts("j:hvd",\%opts);
+
+my $usage = <<EOF;
+
+Kill all selected jobs assocaited with this user id
+Usage:  $0 -j <jid> [-h]
+   -j <jid> provides the job id, or a comma-separated list of job ids, to kill.
+      If <jid> = "all", all submitted jobs will be killed and cleaned up.
+   -d print out what this would do, but don't do it.
+   -h prints this usage message.
+   
+EOF
+
+if ( $opts{h} ) {
+   print "$usage\n";
+   exit;
+}
+
+if (( "$opts{j}" eq "" ) || (( $opts{j} !~ /\d/) && ( $opts{j} !~ /all/)) ) {
+   print "*** Invalid job id entered. See usage below. Nothing done.$usage\n";
+   exit;
+}
+
+my (
+	$user,@current_jobs,$jid,$wd,$job,$requested_jid,@job_list,$jid_file,$cmd
+   );
+
+if ( "$opts{j}" eq "all" ) {
+   $user = $ENV{"USER"};
+#   $requested_jid = `$pwd/gzjobs -u $user | awk '{print \$1}' | tail +3 | xargs`;
+   $requested_jid = `gzjobs -u $user | awk '{print \$1}' | tail +3 | xargs`;
+   $requested_jid =~ s/ /,/g;
+   $requested_jid =~ s/\s//g;
+} else {
+   $requested_jid = "$opts{j}";
+}
+chomp($requested_jid);
+if ( "$requested_jid" eq "" ) {
+   print "No $user jobs are currently running, nothing done.\n";
+   exit;
+}
+
+$cmd = `which canceljob`;
+chomp($cmd);
+
+# ------ get gazebo config values -------------- #
+
+use Cwd 'abs_path';
+use File::Basename;
+$pwd = dirname(abs_path("$0"));
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+
+our $test_home = $gazebo_conf{"Gazebo_Home"};     # base directory where everything resides
+
+# ------ got gazebo config values -------------- #
+
+$jid_file      = "$test_home/submitted_jobs";	# Gazebo memory of what has been submitted
+
+# kill requested jobs
+print "Terminating the following jobs: $requested_jid\n";
+$requested_jid =~ s/,/ /g;
+if ( $opts{d} ) {
+  print "would run '$cmd $requested_jid', but won't\n";
+} else {
+  `$cmd $requested_jid`;
+}
+
+
+# clean up working space if possible
+if (! -e "$jid_file" ) {
+   if ( $opts{v} ) { print "No directory cleanup possible, $jid_file does not exist.\n"; }
+   exit;
+}
+@current_jobs  = `cat $jid_file`;
+
+foreach $job ( @current_jobs ) {
+   ($jid,$wd) = split ' ',$job;
+   if ( $requested_jid =~ /$jid/ ) {
+      chomp($wd);
+      if ( $opts{v} ) { print "Removing $wd\n"; }
+      `rm -rf $wd`;
+   }  
+}
+
+exit;
+
+## -------------------------------------------------------------- ##

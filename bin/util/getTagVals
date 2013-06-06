@@ -1,0 +1,191 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2012, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2012. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+#  - create cvs type output from gazebo logs with the values of field names
+#   or tags, that users request (in the order specified)
+#
+use strict;
+use Getopt::Std;
+
+our %options=();
+
+getopts("t:hqv",\%options);
+
+# print usage if h option set
+if ($options{h}) { usage(); exit; }
+
+my @fields;
+my $sl;
+my $header;
+my $i;
+my $cmd;
+
+# determine search type
+
+  if ($options{v}) { print "find: $options{t}\n"; }
+
+  if (  $options{t} ) {
+    @fields = split /,/, $options{t};
+    # build search list grep string
+    $sl = "<" . $fields[$i] . ">";
+    $header = $fields[$i];
+    for ($i=1; $i<=$#fields; $i++) {
+      $sl = $sl . "|<" . $fields[$i] . ">";
+      $header = $header . "," . $fields[$i];
+    }
+    $cmd = "egrep -e '" . $sl . "'";  
+
+  } elsif ($options{q}) {
+    $cmd = "egrep -e '^<.*>'";  
+
+  } else {
+    print "$0: No valid options selected, quitting!\n";
+    exit;
+  } 
+
+
+# loop through input data which should be gazebo log directories
+
+my $str;
+while ( <STDIN> ) {
+  chomp $_;
+  # it's not a directory unless it contains "gzshared"
+  next unless ($_ =~ /gzshared/);
+  $str = `$cmd $_/*.log`;
+  chomp $str;
+  if ($options{q}) {
+    # only print the available Gazebo tags here "<...>"
+    find_tags($str);
+    last;
+
+  } else {
+    # print data in "find" order selected by user
+    print_in_order($str, $options{t});
+  }
+}
+
+exit;
+
+# ---------- end of Main ----------------
+
+sub find_tags {
+
+my $input = shift;
+
+my @lines = split ( "\n", $input);
+my $line;
+my $data_line = "";
+
+  foreach $line (@lines) {
+    $line =~ /(^<.*>)/;
+    my $str = $1;
+    $str =~ s/<//;
+    $str =~ s/>//;
+    next if ($data_line =~ /$str/);
+    $data_line = $data_line . $str . ",";
+  }
+  chop $data_line;
+  print "field choices are: $data_line\n";
+
+}
+
+sub print_in_order {
+
+my $input = shift;
+my $tag_list = shift;
+my $tag;
+my $line;
+my $data_line;
+my $header_key;
+
+my @tags = split ( ",", $tag_list);
+my @lines = split ( "\n", $input);
+
+ # build a header_key and data_line for each since there are somtimes 
+ # multiple instances of a tag  ( results and td, for instance)
+
+  $header_key = "";
+  $data_line = "";
+  foreach $tag (@tags) {
+    foreach $line (@lines) {
+      if ($line =~ /$tag/) { 
+	$line =~ s/<.*>//;
+        $header_key = $header_key . $tag . ",";
+        $data_line = $data_line . "$line" . ",";
+      }
+    }
+  }
+  chop $header_key;
+  chop $data_line;
+  $data_line =~ s/^ //;
+  $data_line =~ s/, /,/g;
+  print "$header_key\n";
+  print "$data_line\n";
+
+}
+
+sub usage {
+
+    print "\n\n";
+    print "Get tag '<>' values from gazebo log file(s) and print as csv type output  \n";
+    print " *A key is provided for each line as some tags are repeated \n";
+    print "usage: atc_results [<options...>] (-p and/or -f) | $0 [-t tag1,tag2,...] or [-q]  \n";
+    print "              -h help \n";
+    print "              -q 'query and show the tag/field names available'\n";
+    print "              -t 'comma separted list of tag names that you want extracted'\n";
+    print "\n\n";
+
+}

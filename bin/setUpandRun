@@ -1,0 +1,470 @@
+#!/bin/tcsh
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2011, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2011. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+limit memorylocked unlimited
+
+
+#
+# Wrapper script necessary to run your Gazebo test.
+# Most of this is boiler plate 
+
+# set up internationalization 
+# set all locale categories to ISO C 
+setenv LC_ALL C
+
+set sn = "setUpandRun" 
+alias msg 'echo "`date --iso-8601=seconds`" ${sn}: '
+
+
+# DON'T muck with this start time printout!
+set start = `date --iso-8601=seconds`
+echo "-- start time: $start"
+
+echo ""
+echo " ++ Gazebo environment +++++ "
+env | grep GZ
+echo " ++ end env output +++++ "
+echo ""
+
+
+# note which resource manager is being used at this time so
+# we can use the proper env vars below
+if ($?GZ_RESOURCEMGR) then
+   set rmgr = "${GZ_RESOURCEMGR}"
+else
+   msg "*** ERROR in $0 - Environment variable GZ_RESOURCEMGR not defined.  Aborting."
+   exit
+endif
+
+if (! $?GZ_SITE) then
+   msg "*** ERROR in $0 - Environment variable GZ_SITE not defined.  Aborting."
+   exit
+endif
+
+# Save the directory where this test is moved to before running, if moved at all.
+# The default is to move it into a temp working_space that is later cleaned up.
+# 
+if ($?GZ_RUNHOME) then
+  set runhome = ${GZ_RUNHOME}
+  if ($?GZ_TESTNAME) then
+     set testName = ${GZ_TESTNAME} 
+  else
+     set testName = ${runhome:t} 
+  endif
+  if ($?GZ_TESTEXEC) then
+     set testExec = ${GZ_TESTEXEC} 
+  else
+     msg "*** ERROR, Environmental variable GZ_TESTEXEC not defined, aborting."
+     exit
+  endif
+else
+   msg "*** ERROR in $0 - Environment variable GZ_RUNHOME not defined, aborting."
+   exit
+endif
+
+# make sure the executable is just that, before continuing
+if (! -x ${GZ_RUNHOME}/${GZ_CMD} ) then
+     echo "***"
+     msg "ERROR, ${GZ_RUNHOME}/${GZ_CMD} NOT executable, aborting!"
+     echo "***"
+     set myerr = `cat /etc/motd`
+     msg "$myerr"
+     echo "***"
+     exit
+endif
+msg "executable ${GZ_RUNHOME}/${GZ_CMD} found"
+
+if (! $?GZBIN) then
+   msg "*** ERROR in $0 - Environment variable GZBIN not defined.  Aborting."
+   exit
+endif
+
+# place preserve flag in runhome directory if
+# preserve mode requested by user
+set preserveFile = "${GZ_RUNHOME}/gz_preserve"
+set dontpreserveFile = "${GZ_RUNHOME}/gz_dontpreserve"
+if (! $?GZ_CLEANUP) then
+  echo junk > $preserveFile
+else
+  echo junk > $dontpreserveFile
+endif
+
+
+msg acquire node list
+# get list of nodes in use dependent on resource manager being used 
+if ( "${rmgr}" == "moab-slurm" ) then
+
+   # get job id of this session
+   if (! $?SLURM_JOBID) then
+      echo "*** ERROR in $0 - SLURM ENV variable SLURM_JOBID not defined.  Aborting."
+      exit
+   endif
+   set jobid = "${SLURM_JOBID}"
+
+   # create a temporary node file simulating PBS_NODES
+#   set nodes = `${GZBIN}/moab_get_nodes ${jobid}`
+   set nodes = `${GZBIN}/checkjob_getNodeList ${jobid}`
+   echo "$nodes" | gawk '{ for ( i=1 ; i <= NF ; i++ ) print $i }' > /tmp/nodefile$$
+   setenv MF /tmp/nodefile$$
+
+else
+
+   # usin moab cray linux environment 
+  if ( ${rmgr} == "moab-cle" ) then
+#      set nl  = `/usr/bin/aprun -b -q -n ${GZ_NPES} -N 16 hostname | sort | uniq`
+      set nl = `${GZBIN}/getCleNids`
+      if ( "$nl" == "" ) then
+        # just try again if empty
+        set nl = `${GZBIN}/getCleNids`
+      endif
+      set nodes = `echo $nl | gawk '{ for ( i=1 ; i <= NF ; i++ ) print $i }' | grep nid | tr '\n' ' ' `
+      if (! $?PBS_JOBID) then
+           msg "*** ERROR in $0 - Environment variable PBS_JOBID not defined.  Aborting."
+           exit
+      endif
+      set jobid = `echo ${PBS_JOBID} | awk -F. '{print $1}'`
+
+  else
+     
+        # torque is in use
+        # The PBS_NODEFILE ENV variable is something the resource manager sets up.
+        # It contains the list of nodes this job is to run on.
+        # This is used to determine the "nodes" variable. 
+        #
+        if (! $?PBS_NODEFILE) then
+           msg "*** ERROR in $0 - Environment variable PBS_NODEFILE not defined.  Aborting."
+           exit
+        endif
+        setenv MF ${PBS_NODEFILE}
+        set nodes = `uniq ${PBS_NODEFILE} | xargs`
+
+        if (! $?PBS_JOBID) then
+           msg "*** ERROR in $0 - Environment variable PBS_JOBID not defined.  Aborting."
+           exit
+        endif
+        set jobid = `echo ${PBS_JOBID} | awk -F. '{print $1}'`
+      endif
+   endif
+endif
+
+if (! $?GZ_NODES) then
+   setenv GZ_NODES "${nodes}"
+endif
+
+setenv GZ_JOBID ${jobid}
+
+# npes is the number of processors allocated for this test run.
+if (! $?NPES) then
+   if ( "${rmgr}" == "moab-slurm" ) then
+      # slurm is in use
+      if (! $?SLURM_JOB_NUM_NODES) then
+         msg "*** ERROR in $0 - Environment variable SLURM_JOB_NUM_NODES not defined.  Aborting."
+         exit
+      endif
+      if (! $?SLURM_JOB_CPUS_PER_NODE) then
+         msg "*** ERROR in $0 - Environment variable SLURM_JOB_CPUS_PER_NODE not defined.  Aborting."
+         exit
+      endif
+      @ nnodes = $SLURM_JOB_NUM_NODES
+      @ pes = `echo ${SLURM_JOB_CPUS_PER_NODE} | awk -F \( '{print $1}'`
+      @ npes = ${nnodes} * ${pes}
+
+   else
+      if ( "${rmgr}" == "moab-torque" ) then
+
+         # torque is in use
+         # The "npes" variable can also be derived from the PBS_NODEFILE
+         # where each line represents a new processor.
+         # NPES env variable must be set to actual number of
+         # pe's being used.
+         #
+         @ npes = `cat ${PBS_NODEFILE} | wc -l`
+
+      else
+
+         if ( "${GZ_PESPERNODE}" == "" ) then	# assume small number processors per node
+            msg "no NPES or GZ_PESPERNODE environment variables defined, aborting."
+            exit
+         endif
+         # compute number of processors 
+         @ npes = `echo "$nodes" | wc -w` 
+         @ npes = ${npes} * ${GZ_PESPERNODE} 
+         setenv NPES ${npes}
+
+      endif
+   endif
+   setenv NPES ${npes}
+
+endif
+
+set npes = ${NPES}
+
+# boiler plate stuff
+
+# The variable tsid is used to identify the target name(s) of the segment
+# this test is running on.
+#
+msg "acquire my segment name from launch host"
+#set tsId = `${GZBIN}/gmsnfromhost`
+#set tsId = `${GZBIN}/getmysegname`
+set tsId = ${GZ_CU}
+msg "segment name is ${tsId}"
+
+# Create a temporary log directory.
+# This directory lives under GZ_RUNHOME.
+# All files placed here are copied to the final results dir.
+
+set fixedName = ${testName}__${testExec}__${jobid}__${tsId}
+if ($?GZ_ATC) then
+#   rm -rf ${runhome}/${fixedName}.*
+   set tmplogdir = ${runhome}/${fixedName}.$start
+else
+#   rm -rf ${runhome}/gzlogs/${fixedName}.*
+   set tmplogdir = ${runhome}/gzlogs/${fixedName}.$start
+endif
+
+mkdir -p ${tmplogdir}
+echo "tld -> ${tmplogdir}"
+setenv GZ_TMPLOGDIR ${tmplogdir}
+
+# Create the directory where the final results will go.
+# This is usefull to do now especially in cases where the
+# test may fail to generate any data. It serves as an indicator 
+# that something tried to run. 
+set destdir = `${GZBIN}/gz_glean -p -g "ATC" -t "${testName}" -f "${tmplogdir}"`
+msg "create --- ${destdir}"
+echo $destdir | /bin/egrep -qs -i 'error'
+if ($?) then
+  umask 002
+  mkdir -p ${destdir}
+  # bail if the final results dir cannot be made
+  if ($?) then
+    msg "WARNING, final results directory mkdir failed"
+    exit
+  endif
+else
+  msg "WARNING, gz_glean failed"
+  msg "${destdir}"
+  exit
+endif
+
+# Do not change the next two lines!
+set logfile = ${tmplogdir}/${testName}__${testExec}.log
+set joblogfile = ${tmplogdir}/tmpjoblog
+echo "logfile ->  ${logfile}"
+setenv GZ_LOGFILE ${logfile}
+msg "creating logfile in working space"
+touch ${logfile}
+
+# All the following output is needed for analysis tools.
+# Each value is set above or by the resource manager.
+# No changes should be made here.
+#
+echo "${tsId}" > ${tmplogdir}/machine
+echo "<npes> ${npes}" >> ${tmplogdir}/machine
+
+echo "<segName> ${tsId}" > ${logfile}
+echo "<testName> ${testName}" >> ${logfile}
+echo "<testExec> ${testExec}" >> ${logfile}
+echo "<npes> ${npes}" >> ${logfile}
+echo "<JobID> ${jobid}" >> ${logfile}
+echo "<nodes> ${nodes}" >> ${logfile}
+if ($?GZ_COMPILER) then
+  echo "<compiler> ${GZ_COMPILER}" >> ${logfile}
+else
+  echo "<compiler> undef" >> ${logfile}
+endif
+if ($?GZ_MPILIB) then
+  echo "<mpi> ${GZ_MPILIB}" >> ${logfile}
+else
+  echo "<mpi> undef" >> ${logfile}
+endif
+echo "<params> ${GZ_TEST_PARAMS}" >> ${logfile}
+echo "<rmgr> ${rmgr}" >> ${logfile}
+if (( "${rmgr}" == "moab-only" ) || ( "${rmgr}" == "none-none" )) then
+   # moab only or no scheduler implementation
+   echo "<user> ${GZ_USER}" >> ${logfile}
+   echo "<host> ${HOST}" >> ${logfile}
+else
+ if ( "${rmgr}" == "moab-slurm" ) then
+   echo "<user> ${GZ_USER}" >> ${logfile}
+   echo "<host> ${HOST}" >> ${logfile}
+ else
+   echo "<user> ${PBS_O_LOGNAME}" >> ${logfile}
+   echo "<host> ${HOST}" >> ${logfile}
+ endif
+endif
+if (! $?VERSION ) then
+   setenv VERSION 1.0
+   setenv GZ_VERSION 1.0
+endif
+echo "<vers> ${GZ_VERSION}" >> ${logfile}
+echo "<start> ${start}" >> ${logfile}
+echo "<dbready>" >> ${logfile}
+
+# this should cause file to flush to disk
+set nllf = `wc -l ${logfile} | awk '{print $1}'`
+msg "number of lines in logfile before job run - ${nllf}"
+
+# execute the test/job via the command script
+cd ${GZ_RUNHOME}
+
+msg "transferring control to user job "
+
+# if an executable prolog script exists run it now
+if (($?GZ_PROLOG) && (${GZ_PROLOG} != "")) then
+  if (-x ${GZ_PROLOG}) then
+  msg "run ${GZ_PROLOG}"
+  ${GZ_RUNHOME}/${GZ_PROLOG} >>& ${logfile}
+  else
+    msg "Error, no executable ${GZ_PROLOG} exists, skipping"
+  endif
+endif
+
+msg "run ${GZ_CMD} from ${runhome}"
+if ($?SWL) then
+   ${GZBIN}/util/mytime ${GZ_RUNHOME}/${GZ_CMD} |& tee -a ${logfile}
+else
+   ${GZBIN}/util/mytime ${GZ_RUNHOME}/${GZ_CMD} >>& ${logfile}
+endif
+
+# if an executable epilog script exists run it now
+if (($?GZ_EPILOG) && (${GZ_EPILOG} != ""))then
+  if (-x ${GZ_EPILOG}) then
+    msg "run ${GZ_EPILOG}"
+    ${GZ_RUNHOME}/${GZ_EPILOG} >>& ${logfile}
+  else
+    msg "Error, no executable ${GZ_EPILOG} exists, skipping"
+  endif
+endif
+
+msg "${GZ_CMD} finished user job, control returned to Gazebo (setUpandRun)"
+
+touch ${tmplogdir}/post_complete
+
+msg "listing of tmplogdir after post_complete --"
+ls -al ${tmplogdir}
+
+set lfn = `wc -l ${logfile} | awk '{print $1}'`
+msg "number of lines in logfile after run complete - ${lfn}"
+
+# boiler plate stuff
+set end = `date --iso-8601=seconds`
+echo "<end> ${end}" >> ${logfile}
+
+# make it so that gazebo can read all the data logs
+if ($?GZ_ATC) then
+   chmod -R 755 ${tmplogdir:h}
+else
+   chmod -R 755 ${runhome}/gzlogs
+endif
+
+# do a little cleanup
+if (-e /tmp/nodefile$$ ) then
+  rm /tmp/nodefile$$
+endif
+
+# glean the results for later analysis, etc.
+   msg "glean the results from the tmp working space"
+   ${GZBIN}/gz_glean -g "ATC" -t "${testName}" -f "${tmplogdir}"
+
+# save what's appropriate to the gazebo DB.
+# The "dbi" file is placed in the result dir to indicate
+# that the data has been stored to the DB.
+if ($?GZ_DBINSERT) then
+  set myLogFile = `ls $destdir/*.log`
+  if ( -e $myLogFile) then
+      msg "insert results into DB"
+      set myRes = `${GZBIN}/mysql/storeresultsDBI2 -l ${myLogFile}`
+      echo $myRes | /bin/egrep -qs 'success'
+      if ($?) then
+        msg "WARNING, database insert failed"
+      else
+        `touch $destdir/dbi`;
+      endif
+  else
+    msg "WARNING, no log file data to insert into DB"
+  endif
+else
+    msg "NOTICE, database insert option not selected"
+endif
+
+# save any core files
+#if (-e *core* ) then
+#  cp *core* $destdir
+#endif
+
+# cleanup temporary working space
+# done here instead of in atc_run since job may run in batch mode
+if ($?GZ_CLEANUP) then
+   if ( -f  $preserveFile ) then
+     msg "preserve file found in working space, preserve all data"
+   else
+     msg "cleanup the temporary working space"
+     if (($?GZ_FASTCOPY) && ("${GZ_FASTCOPY}" == "TRUE")) then
+       msg "fast copy mode: remove only tmp log dir component"
+       rm -rf ${tmplogdir}
+     else
+       msg "remove complete runhome space"
+       rm -rf ${GZ_RUNHOME}
+     endif
+   endif
+endif
+
+set done = `date --iso-8601=seconds`
+echo "-- end time: ${done}"
+
+# End of script
+exit

@@ -1,0 +1,8 @@
+# SE palette for use with GNUplot
+# See http://w3.wtb.tue.nl/nl/organisatie/systems_engineering/info_for_se_students/how2make_a_poster/pictures/
+255 190 190 # red
+255 190 255 # pink
+190 190 255 # violet
+190 255 255 # blue
+190 255 190 # green
+255 255 190 # yellow

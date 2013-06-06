@@ -1,0 +1,34 @@
+#!/usr/bin/perl
+
+
+use Cwd 'abs_path';
+use File::Basename;
+my $pwd = dirname( abs_path("$0") );
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+my $basedir = $gazebo_conf{ 'Target_Results_Dir'};
+
+my @f;
+my $str;
+my $jobsMoved = 0;
+
+ unless (-e "$basedir/healthChkFailures" ) {
+   `mkdir -p "$basedir/healthChkFailures"`;
+ }
+
+ my $cmd = "egrep -li Health $basedir/*.mn.*";
+ my $res = `$cmd`;
+ my @res = split("\n", $res);
+
+  foreach $str (@res) {
+    $jobsMoved++;
+    print "move file $str\n";
+    `mv $str "$basedir/healthChkFailures"`;
+    $str =~ s/OU/ER/;
+    `mv $str "$basedir/healthChkFailures"`;
+  }
+
+print "$jobsMoved Health Check Error Jobs moved\n";
+exit;
+
+

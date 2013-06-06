@@ -1,0 +1,21 @@
+#!/usr/bin/perl
+#
+# This script creates a file of setenv commands for each of
+# the variables contained in a test's config file.
+# The calling program can then source this file to
+# actually set the ENV.
+
+my $key;
+my $value;
+
+do "/usr/projects/gazebo/test_exec/yellowrail/x86_64/gzshared/test4/config";
+
+
+my $k;
+foreach $k (sort keys %test_config) {
+#    print "$k: $test_config{$k}\n";
+    print "\$ENV{'$k'} = '$test_config{$k}'\n";
+}
+
+
+exit;

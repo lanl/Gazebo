@@ -1,0 +1,202 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2011, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2011. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+#
+#
+# 8/2007, initial creation. C. Idler
+# 9/2007, modified by R. Light to become general copy/add utility
+# 2/2009, paired down to work in atc mode only
+# 1/2011, simplifed and renamed 
+
+# helper script which creates new test directories
+# nothing special here that couldn't be done manually too
+
+my $prog;
+($prog = $0) =~ s/.*\///;
+
+use POSIX;
+use Sys::Hostname; our $host = hostname;
+use IO::Socket;
+use File::Basename;
+use Getopt::Std;
+
+our %opts;
+$opts{c} = "";
+
+getopts("t:c:hl",\%opts);
+
+use Cwd 'abs_path';
+use File::Basename;
+my $pwd;
+$pwd = dirname(abs_path("$0"));
+chomp($pwd);
+my $GH = "$pwd";
+
+unless ( do "$pwd/get_gazebo_config") {
+   die "get_gazebo_config failed!";
+}
+
+use strict;
+
+my   $GB = $ENV{'GZBIN'};      # directory where gazebo binaries reside
+my   $GH = $ENV{'GZHOME'};     # base directory where everything else resides
+
+my $usage = <<EOF;
+
+This utility adds or copies tests/jobs into the Gazebo framework. 
+If no mode is specified, ADD test is assumed.
+You will be queried for any necessary test/job names.
+
+Usage:  
+
+$0 [-c existing_name] [-t new_name] [-h] [-l]
+
+   -c test name to copy 
+   -t test name to add
+   -l list the tests that are currently available
+   -h prints this help message
+EOF
+
+if ( $opts{h} ) {	# print usage info
+   print "$usage\n";
+   exit;
+}
+
+if ( $opts{l} ) {	# list tests available for this user in this group
+  my ($t, $vals);
+  my $query = `ls -1 $GH/test_exec`;
+  my @tsts = split(/\n/, $query);
+  if ( @tsts == 0) { print "\tnone\n";}
+  foreach $t (@tsts) {
+      my $f = "$GH/test_exec/$t/gzconfig";
+      if (! -R "$f") {
+          print "\t$t, warning, no gzconfig file found \n";
+      } else {
+          print "\t$t\n";
+      }
+  }
+  exit;
+}
+
+
+# what groups am i in
+my $glist = "gzshared";
+my $grp_name;
+$grp_name = $glist;
+chomp $glist;
+
+my $tst_name = "";
+my $tmp = "new";
+
+# get the new test name
+if ( $opts{t} eq "" ) {
+   while ( "$tst_name" eq "" ) {
+      print "Enter a test/job name to create: ";
+      chomp ($tst_name = <STDIN>);
+   }
+} else {
+   $tst_name = $opts{t};
+}
+
+# test name validation
+if (($tst_name =~ /__/) || ( $tst_name  =~ /\./)) {
+  print "$prog: ERROR: please do not use multiple underscores '_' or a dot '.' in the name\n";
+  exit;
+}
+if ($tst_name =~ / /) {
+  print "$prog: ERROR: empty spaces not allowed in name\n";
+  exit;
+}
+
+print "Attempting to add $tst_name into the Gazebo test structure\n";
+
+  if ( $opts{c} ) {	# copying a test
+
+    if ( $opts{c} eq "" ) {
+      print "must provide test name to copy, quitting!\n";
+      exit;
+    }
+    my $existing_name = $opts{c};
+
+     unless ( -d "$GH/test_exec/$existing_name" ) {
+       print "ERROR: $GH/test_exec/$existing_name directory does not exist, quitting!\n";
+       exit;
+     }
+     if ( -d "$GH/test_exec/$tst_name" ) {
+         print "ERROR: $GH/test_exec/$tst_name directory already exists, quitting!\n";
+         exit;
+     }
+     system("mkdir -p $GH/test_exec/$tst_name");
+     system("cp -rf $GH/test_exec/$existing_name/* $GH/test_exec/$tst_name");
+     print "--- Duplicate of $existing_name created in $GH/test_exec/$tst_name\n";
+
+  } else { 	# adding a test
+
+        # make sure this test does not already exist in the test directory
+        if ( -d "$GH/test_exec/$tst_name" ) {
+           "Sorry: $GH/test_exec/$tst_name directory exists, quitting!\n";
+           exit;
+        }
+        # otherwise, set up the directories and template files
+         system("mkdir -p $GH/test_exec/$tst_name");
+         system("cp $GB/../include/gzconfig.example $GH/test_exec/$tst_name/gzconfig.example");
+         system("cp $GB/../include/makeit.example $GH/test_exec/$tst_name/makeit.example");
+         system("cp $GB/../include/runit.example $GH/test_exec/$tst_name/runit.example");
+         system("chmod -R 775 $GH/test_exec/$tst_name");
+    
+         print "--- $GH/test_exec/$tst_name directory created\n";
+  }
+
+exit;

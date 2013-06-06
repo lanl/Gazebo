@@ -1,0 +1,102 @@
+#! /bin/bash
+#--------------------------------------------------------------------
+# gz-res - gazebo results processing helper
+#
+# Takes gazebo results dir as input parameter, displays useful things
+# and if possible sets environment variables res, tld and log.  
+#
+#--------------------------------------------------------------------
+ 
+delim1="######################################################################################################################"
+delim2="----------------------------------------------------------------------------------------------------------------------"
+cmd() {
+  echo $delim2
+  echo "-->$*"
+  eval $*
+}
+
+# if results dir parm valid, set res env var and list it
+res=$1
+if [[ -d $res ]]; then
+  echo $delim1
+  echo "-->export res=$res"
+  cmd "ls -l --time-style=\"+%F %T\" $res"
+
+  # if log file exists in results dir, set log env var
+  log="${res##*/}"
+  log="${log%__*}"  
+  log="${log%__*}.log" 
+  if [[ -e $res/$log ]]; then
+    echo $delim2
+    echo "-->export log=\$res/$log"
+    log="$res/$log"
+  else
+    echo "--- valid logfile not found ---"
+    unset log
+  fi
+
+  # if test program stdoutfile exists in results dir set out env var
+  out="stdoutfile"
+  if [[ -e $res/$out ]]; then
+    echo $delim2
+    echo "-->export out=\$res/$out"
+    out="$res/$out"
+  else
+    echo "--- valid test program stdout not found ---"
+    unset out
+  fi
+
+  # if stderr exists with non-zero length, cat it
+  if [ -s $res/*.ER ]; then cmd "cat $res/*.ER"; fi
+
+  # if RESULTS exists, cat it
+  if [ -e $res/RESULTS ]; then cmd "cat $res/RESULTS"; fi
+
+  # if stdout exists, tail it and look for tld & logfile
+  stdout=( $res/*.OU )
+  if [ -e $stdout ]; then 
+    cmd "egrep \"start time:|GZ_PESPERNODE|GZ_NPES|GZ_TIMELIMIT\" $stdout"
+    cmd "tail $stdout"
+
+    # If stdout lists extant TLD, set tld env var and list it
+    tld=`grep "^tld -> " $stdout | awk '{print $3}'`
+    if [[ -d $tld ]]; then
+      echo $delim2
+      echo "-->export tld=$tld"
+      cmd "ls -lt  --time-style=\"+%F %T\" $tld"
+    else
+      echo "--- valid tld not found ---"
+      unset tld
+    fi
+
+    # If stdout lists extant logfile, set log env var
+    log2=`grep "^logfile -> " $stdout | awk '{print $3}'`
+    if [[ -e $log2 ]]; then
+      echo $delim2
+      echo "-->export log=$log2"
+      log=$log2
+    else
+      echo "--- valid logfile not found in stdout ---"
+      unset log2
+    fi
+ 
+    # Even if tld not found, parent dir may be valid run dir
+    run="${tld%/*}"
+    if [[ -d $run ]]; then
+      echo $delim2
+      echo "-->export run=$run"
+      cmd "ls -lt  --time-style=\"+%F %T\" $run"
+    else
+      echo "--- valid run dir not found ---"
+      unset run
+    fi
+
+  fi
+  echo $delim2
+else
+  echo "Not valid directory: $1"
+  unset res tld log run out
+fi
+export res tld log run out
+# --- end of file ---
+

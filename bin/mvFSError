@@ -1,0 +1,36 @@
+#!/usr/bin/perl
+
+use Cwd 'abs_path';
+use File::Basename;
+my $pwd = dirname( abs_path("$0") );
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+my $basedir = $gazebo_conf{ 'Target_Results_Dir'};
+ 
+my @f;
+my $str;
+my $jobsMoved = 0;
+
+ unless (-e "$basedir/FileSystemFailures" ) {
+   `mkdir -p "$basedir/FileSystemFailures"`;
+ }
+
+# my $cmd = "egrep -l 'No such file or directory' $basedir/*.mn.ER";
+ my $cmd = "egrep -l 'executable available, aborting' $basedir/*.mn.OU";
+ my $res = `$cmd`;
+ my @res = split("\n", $res);
+
+
+  foreach $str (@res) {
+    print "move file $str\n";
+    `mv $str $basedir/FileSystemFailures""`;
+    $str =~ s/OU/ER/;
+    `mv $str "$basedir/FileSystemFailures"`;
+    $jobsMoved++;
+  }
+
+
+print "$jobsMoved File System error Jobs moved\n";
+exit;
+
+

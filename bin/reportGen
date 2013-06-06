@@ -1,0 +1,114 @@
+#!/usr/bin/perl
+
+# little script to help speed up the job analysis step
+# use it like "atc_results -f | reportGen"
+#
+# Created and refined during Cielo acceptance testing
+
+use File::Basename;
+use Getopt::Std;
+our %opt;
+
+use Cwd 'abs_path';
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+
+# setup arguments as switches or ones that require strings  
+getopts( "h", \%opt);
+# print usage if h option set
+if ($opt{h}) { usage(); exit; }
+
+print "result report format\n";
+print "  ###, start day, start time, end day, end time, test name, npes, job id, reason, text \n";
+print "  ------------------------------------------------------------------------------------ \n\n";
+
+
+while (<>) {
+
+  my $log_dir  = $_;
+  chomp $log_dir;
+  $log_dir =~ s/^\s+//;
+  next unless ( -d $log_dir );
+  print "$log_dir\n";
+
+  my $file =  $log_dir . "/" . "*.log";
+  my @f = glob($file);
+
+#  print "looking for - $file\n";
+#  print "found - $f[0]\n";
+
+# process an existing log file
+  if ( -s $f[0] ) {
+
+    # provide a start on creating output for
+    # the detailed error phase of the report
+
+    my $name = `grep testName $file | awk '{print \$2}'`;
+    chomp $name;
+    my $npes = `grep "<npes>"  $file | awk '{print \$2}'`;
+    chomp $npes;
+    my $jid = `grep "<JobID>" $file | awk '{print \$2}'`;
+    chomp $jid;
+    my $sdt = `grep "<start>" $file | awk '{print \$2}'`;
+    chomp $sdt;
+    my ($sdate,$stime) = split "T", $sdt; 
+    $stime =~ s/-.+//;
+    my $edt = `grep "<end>" $file | awk '{print \$2}'`;
+    chomp $edt;
+    my ($edate,$etime) = split "T", $edt; 
+    $etime =~ s/-.+//;
+    my $res = `egrep "<results?>" $file`;
+    if ( $res eq "" ) {
+      print "  ###, $sdate, $stime, $edate, $etime, $name, $npes, $jid, UNKNOWN, test did not provide pass/fail status\n\n";
+    } else {
+      print "  $res";
+      if ( $res =~ /pass/i ) {
+        print "  ###, $sdate, $stime, $edate, $etime, $name, $npes, $jid, PASS\n\n";
+      }
+      if ( $res =~ /fail/i ) {
+        print "  ###, $sdate, $stime, $edate, $etime, $name, $npes, $jid, FAIL\n\n";
+      }
+    }
+
+  } else {
+
+  # CNI == Could Not Identify
+  my $result = "CNI";
+
+   # handle result directories that don't have a log file
+   # or there is one, but it's empty
+
+    my @parts = split "/", $log_dir;
+    my ($info, $dt) = split(/\./, $parts[10]);
+    my ($name, $runfile, $jid, $seg) = split(/__/, $info);
+    my ($date,$time) = split "T", $dt;
+    $time =~ s/-.+//;
+
+    # might be able to find core size if DRM outfile exists
+    my $npes = "";
+    $npes = `egrep "GZ_NPES=" $log_dir/*`;
+    chomp $npes;
+    $npes =~ s/.*GZ_NPES=//;
+
+    # might be able to catch time out issues
+    if (`egrep "TIME LIMIT|CANCEL|TIMEOUT" $log_dir/*`) {
+      $result = "TIMEOUT";
+      print "  ###, $date, $time, , , $name, $npes, $jid, $result, job reached time limit or was cancelled \n\n";
+    } else {
+      print "  ###, $date, $time, , , $name, $npes, $jid, $result, no log file data found to parse \n\n";
+    }
+
+  }
+
+}
+
+sub usage {
+
+   
+    print "\n\n";
+    print " Snarf up log file info from log directories and provide synopsis\n";
+    print " usage: e.g. atc_results [-i -f -p] | $0 \n";
+    print "     -h help \n";
+
+}

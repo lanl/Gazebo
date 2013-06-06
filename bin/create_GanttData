@@ -1,0 +1,321 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 20010, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 20010. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# utility script which creates data suitable for the gantt.py program
+# which with the aid of gnuplot (ver. 4.2+) can create gantt charts of
+# cpu/node utilization
+#
+# output is simply an output of each resource with the time(s) a job
+# ran on the node all relative to a start time of 0 and its name.
+#
+# ex.  node5  2  5  myjob
+# myjob ran on node5 from minute 2 until minute 5.
+
+require "getopts.pl";
+use Getopt::Std;
+use File::Basename;
+use Sys::Hostname;
+use Time::Local;
+our $host = hostname;
+
+use Cwd 'abs_path';
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+my $GB =  $ENV{'GZBIN'};
+
+our %opt;
+$opt{t} = "";
+$opt{u} = "";
+$opt{l} = "";
+$opt{s} = "";
+$opt{e} = "";
+$opt{g} = "";
+
+# setup arguments as switches or ones that require strings
+&getopts( "g:t:u:l:s:e:apfhiv", \%opt );
+
+my $running_or_queued = "";
+my $pes;
+my $params;
+my $tn;
+my $my_cus;
+my ( $end, $start );
+our @lfs;
+our $lf;
+our $f;
+our @result;
+our $smallestStartTime = 9999999999;
+
+# print usage if h option set
+if ( $opt{h} ) { usage(); exit; }
+
+if ( "$opt{e}" ne "" ) {
+    $end = `date -I -d "$opt{e}"`;
+    chomp($end);
+}
+else {
+    $end = `date -I`;
+    chomp($end);
+}
+
+if ( "$opt{s}" ne "" ) {
+    $start = `date -I -d "$opt{s}"`;
+    chomp($start);
+}
+else {
+    $start = `date -I -d "15 days ago $end"`;
+    chomp($start);
+}
+
+#print "\t Analysis between $start and $end \n";
+
+# determine where to search
+my $cmd;
+if ( $opt{l} ) {
+
+    # specify alternate dirs to search for logs.
+    # not generally used by John Q. Public.
+    # will only work for the parent of directories with the form
+    # <testName>_<JobId>_<SegName>.date
+    #    print "\t results directory -> $opt{l}\n\n";
+    $cmd = "find $opt{l} -type d -maxdepth 1 -mindepth 1";
+}
+
+#print "\t using results directory -> $gazebo_conf{'Target_Results_Dir'} \n\n" unless ( $opt{a} );
+
+# select the group directories to look through
+my $tg;
+my @grps = ();
+my $me   = `whoami`;
+chomp $me;
+
+# only look at gzshared in ATC mode
+#if ( $opt{a} ) {
+    push( @grps, "gzshared" );
+#}
+#elsif ( "$opt{g}" ne "" ) {
+#    push( @grps, $opt{g} );
+#}
+#else {
+#    $tg = `$GB/gazebo_listgrp -u $me`;
+#    chomp $tg;
+#    @grps = split( / /, $tg );
+#}
+
+my $group;
+foreach $group (@grps) {
+    $cmd = "$GB/find_test_dirs -s $start -e $end -g $group";
+
+    our %StartTime = ();
+    our %EndTime   = ();
+    my @my_cus = ();
+
+    my @fields;
+    my $ld;
+    my $logs_processed = 0;
+    foreach $_ (`$cmd`) {
+        chomp;
+
+       print " looking in $_\n" if ($opt{v});
+
+        # skip null strings
+        next if ( $_ eq "" );
+
+        @fields = split /\//, $_;
+        $ld = pop(@fields);
+
+        #skip log if name starts with a number
+        next if ( $ld =~ /^\d/ );
+
+        #get name, cu, jobid, and time of this test run
+        my @tmpstr = split( /\./, $ld );
+        my $arrlen = @tmpstr;
+        if ( $arrlen != 2 ) {
+            next;
+        }
+        my $testTime = $tmpstr[1];
+        my @tmpstr1  = split( /__/, $tmpstr[0] );
+        my $testCU   = $tmpstr1[3];
+        my $testName = $tmpstr1[0];
+        my $testjid  = $tmpstr1[2];
+
+        @lfs = glob("$_/*.log");
+        $lf = "";
+        # get correct log file
+        if (@lfs) {
+          print " choices are: @lfs\n" if ($opt{v});
+          foreach $f (@lfs) {
+            my $tlf = basename($f);
+            if ($tlf =~ /^$testName/) {
+              $lf = $f;
+            }
+          }
+        } else {
+          print " NO LOG FILE EXISTS" if ($opt{v});
+          next;
+        }
+
+        print "checking: $lf \n" if ( $opt{v} );
+
+        our $thisEnd   = "";
+        our $thisStart = "";
+
+        if ( "$opt{t}" ne "" ) {
+            #skip this log if user not looking for this particular test
+            next if ( $ld !~ /$opt{t}/i );
+        }
+
+        if ( "$opt{u}" ne "" ) {
+          #skip this log if user not looking for this particular machine segment
+            next if ( $ld !~ /$opt{u}/ );
+        }
+
+        if ( -r "$lf" ) {
+            $thisStart =
+              `grep -m 1 "<start>" $lf | gawk -F"> "  '{ print \$2 }'`;
+            chomp($thisStart);
+            next if ($thisStart eq "");
+
+            $thisEnd =
+              `grep -m 1 "<end>" $lf | gawk -F"> "  '{ print \$2 }'`;
+            chomp($thisEnd);
+            next if ($thisEnd eq "");
+        }
+        else {
+            print "ERROR: no $lf file exists!\n";
+            next;
+        }
+
+        $logs_processed++;
+        my $str;
+        $str = `grep '<nodes> ' $lf`;
+        chomp $str;
+
+        #print "\nDebug: got nodes list - $str\n";
+        $str =~ s/<nodes> //g;
+        my @nl = split( / /, $str );
+
+        my $x;
+        my @range;
+        my $n;
+
+        my $ts = date2epoch($thisStart);
+        my $te = date2epoch($thisEnd);
+        my $tmp;
+
+     # find the smallest start time so we can reduce all values to starting at 0
+        if ( $ts < $smallestStartTime ) {
+            $smallestStartTime = $ts;
+           #   print "smallest time to normalize with - $smallestStartTime\n";
+        }
+
+        my $stuff = "$ts:$te";
+        foreach $n (@nl) {
+           push (@result, "$n:" . $stuff . ":$testName");
+        }    # foreach node in nodelist
+
+    }    # foreach directory found by find_test_dirs
+
+    # now print results with normalized time values
+    # all set to be minutes from the earliest time of 0
+    # seconds would be just to much for the Gantt chart
+    my $line;
+    my @sres = sort(@result);
+    foreach $line (@sres) {
+      my ($n, $ts, $te, $tn) = split (/:/, $line);
+      my $ns = int( ( $ts - $smallestStartTime ) / 60 );
+      my $ne = int( ( $te - $smallestStartTime ) / 60 );
+      print " $n\t$ns\t$ne\t$tn\n"
+    }
+    
+    
+    print "processed $logs_processed logs\n" if ( $opt{v} );
+
+}    # foreach group in test result directory
+
+exit;
+
+sub usage {
+
+    print "\n\n";
+    print "usage: $0 \n";
+    print "              -h help \n";
+    print "              -e 'Analyze logs ending on yyyy-mm-dd, default is today'\n";
+    print "              -u 'Analyze results for a particular segment name. Exact match necessary'\n";
+    print "              -s 'Analyze logs starting on yyyy-mm-dd, default is last 15 days'\n";
+    print "              -t 'test_name. Analyze results for this test_name only. Partial name will work'\n";
+    print "              -v 'verbose mode'\n";
+    print "\n\n";
+
+}
+
+sub date2epoch {
+
+    # input ex:   2008-03-26T05:12:41-0700
+
+    my $input = shift;
+
+    my ( $d, $t ) = split( /T/, $input );
+    my ( $yr, $mo,  $dy )      = split( /-/, $d );
+    my ( $hr, $min, $secPlus ) = split( /:/, $t );
+
+    my ( $sec, $kruft ) = split( /-/, $secPlus );
+    $mo = $mo - 1;
+
+    my $time = timegm( $sec, $min, $hr, $dy, $mo, $yr );
+
+    return $time;
+}

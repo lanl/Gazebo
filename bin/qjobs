@@ -1,0 +1,158 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+
+# Description:
+# simple utility to re-format some of the output of qstat in a form similar to bjobs.
+# no arguments or options, nada!
+#
+# Craig Idler,  11/2006
+#
+ 
+($prog = $0) =~ s!.*/!!;
+
+use strict;
+
+
+print "Job_Id    Name      Owner          State           Queue,entry-time              Resources\n";
+print "------    ----      -----      ---------    ----------------------------        ------------\n";
+
+my ($str, $tstr, $cmd);
+my $etime;
+my $nodect = "";
+my $cuUsed = "";
+
+  $cmd = 'qstat -f'; 
+  open(OUT, "$cmd |");
+  while (  <OUT> ) {
+    if ($_ =~ /Job Id: (\d+)\./) {
+      print "\n";
+      printf ("%-5s", $1 );
+      $etime = "";
+      next;
+    }
+    if ($_ =~ /Job_Owner = (\w+)/) {
+      printf ("%10.8s ", $1 );
+      next;
+    }
+    if ($_ =~ /Job_Name = /) {
+      $str = $';
+      chomp($str);
+      printf ("%9.7s ", $str );
+#    print "job name -> $_ "; 
+      next;
+    }
+    if ($_ =~ /job_state = (\w)/) {
+      $str = $1;
+	if ($str =~ /R/) {
+	  $tstr = "R($etime)";
+          printf ("%14s", $tstr );
+	}
+	else {
+          chomp($str);
+          printf ("%14s", $str );
+	}
+      next;
+    }
+    if ($_ =~ /queue = (\w+)/) {
+      $tstr = $1 . ",";
+      printf ("%9s", $tstr );
+    }
+    if ($_ =~ /resources_used.walltime = /) {
+      $str = $';
+      chomp($str);
+      $etime = $str;
+      next;
+    }
+    if ($_ =~ /qtime = /) {
+      $str = $';
+      chomp($str);
+      printf ("%-26s", $str );
+      next;
+    }
+    if ($_ =~ /Resource_List.nodect = /) {
+      $str = $';
+      chomp($str);
+      $nodect = $str;
+      next;
+    }
+    if ($_ =~ /exec_host = /) {
+      $str = $';
+      chomp($str);
+      my @resource = split('/', $str);
+      $cuUsed = $resource[0];
+      $cuUsed =~ s/\d+//;
+      next;
+    }
+    if ($_ =~ /Resource_List.nodes = /) {
+      $str = $';
+      chomp($str);
+      if ($str =~ /^n(..)/) {
+	my $cu = "cu" . $1;
+	/n..-...:(ppn=.)/;
+	$tstr = $1 . ":" . $cu;
+        print "\t$nodect:$tstr";
+      }
+      else {print "\t$str";}
+      print ":$cuUsed";
+      next;
+    }
+  }
+  close (OUT);
+
+  print "\n";
+
+exit 0;

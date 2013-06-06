@@ -1,0 +1,11 @@
+Gazebo is using Splunk as a data analysis tool. Splunk expects events in a much different format
+than the standard gazebo output log. For compatiblity purposes the td2splunkData utility will create
+a my.splunkdata file from any trend data that is generated from a test and put it into native Splunk
+format.
+
+Splunk is a commercial product and is not released as part of Gazebo. However, Gazebo can be use just
+fine without a Splunk infrastructure in place. 
+
+td2splunkData will not over write an existing *.splunkdata file.  However, to see how this works:
+1) remove the my.splunkdata file
+2) run "./td2splunkData ."

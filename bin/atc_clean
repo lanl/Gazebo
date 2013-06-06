@@ -1,0 +1,426 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2013, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2013. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+
+# This program cleans up after tests that either atc_run or setUpandRun could not. 
+# Often this is the result of a job timing out, being killed, or atc_run 
+# used in the batch (-b) mode.
+# This script replaces "atc_xfer -m" functionality
+
+## -------------------------------------------------------------- ##
+
+use Getopt::Std;
+use File::Basename;
+our %opts;
+getopts("dhv",\%opts);
+
+my $usage = <<EOF;
+
+ Clean up test logs and result data.  
+
+Usage:  $0
+   -h prints this usage message.
+   -d debug mode. Just show what it would do.
+   -v some verbosity 
+
+EOF
+
+if ( $opts{h} ) {
+   print "$usage\n";
+   exit;
+}
+
+my $here = `hostname`;
+chomp($here);
+
+
+my %month = (
+	"Jan"	=>	"01",
+	"Feb"	=>	"02",
+	"Mar"	=>	"03",
+	"Apr"	=>	"04",
+	"May"	=>	"05",
+	"Jun"	=>	"06",
+	"Jul"	=>	"07",
+	"Aug"	=>	"08",
+	"Sep"	=>	"09",
+	"Oct"	=>	"10",
+	"Nov"	=>	"11",
+	"Dec"	=>	"12",
+            );
+
+# ------ get gazebo config values -------------- #
+
+use Cwd 'abs_path';
+use File::Basename;
+$pwd = dirname(abs_path("$0"));
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+
+# ------ got gazebo config values -------------- #
+
+
+if ( ! -r qq($gazebo_conf{"Target_Results_Dir"}) ) {
+   print qq(Warning! No read permission on results directory $gazebo_conf{"Target_Results_Dir"}, aborting.\n);
+   exit -1;
+}
+
+if ( ! -w qq($gazebo_conf{"Target_Results_Dir"}) ) {
+   print qq(Warning! No write permission on results directory $gazebo_conf{"Target_Results_Dir"}, aborting.\n);
+   exit -1;
+}
+
+my $test_home = $gazebo_conf{"Gazebo_Home"};     # base directory where everything resides
+my $outputdir = qq($gazebo_conf{"Target_Results_Dir"}); # top level results directory
+my $drm_orph_dir = "$outputdir/drm-orph"; # directory for orphaned moab output files
+if (! -e "$drm_orph_dir" ) { system("mkdir -p $drm_orph_dir\n"); }
+
+
+# Clean up Moab output files out of results directory for jobs that are complete
+# One reaseon these often exist here is that atc_run was used in batch mode.
+#
+our (@moab_jids,%files,%start_date,%test_name,%tld,%test_config);
+
+print "skip active jobs ... \n";
+my $mm = `which mdiag`;
+chomp($mm);
+my $activeJobs = `$mm -j | grep -e "^[0-9]" | awk '{ print \$1 }' | xargs `;
+
+# first, get the list of DRM files lying around in the top level results directory
+print "Checking for left-over output files ... \n";
+get_moab_ids();
+
+if ( @moab_jids > 0 ) {
+
+   my ($jid,$final_resting_dir);
+   my $f;
+   foreach $jid ( @moab_jids ) {
+
+      # don't process job if it's still active/running/queued/etc.
+      if ( $activeJobs =~ /\b$jid\b/ )  {
+         if ($opts{d}) {print "  - Job id $jid is active so skipping\n";}
+         next;
+      }
+
+      # if start date or test name is missing simply orphan this sucker!
+      if ((! defined $test_name{$jid}) || (! defined $start_date{$jid})) {
+        if ($opts{d} ) {print "\n - Processing job that failed to start, id - $jid\n"; }
+        foreach $f (@{$files{$jid}}) {
+          process_orphaned_moab_file($f);
+        }
+        next;
+      }
+
+      print "\n - Process $test_name{$jid}, Job id $jid, start date: $start_date{$jid}\n";
+
+      # Figure out where the final resting directory is for this job data.
+      my ($mo,$dy,$yr) = split '-',$start_date{$jid};
+      $mo = sprintf("%02d",$mo);
+      $dy = sprintf("%02d",$dy);
+      my $sstr = "__" . $jid . "__";
+      $final_resting_dir = qq($gazebo_conf{"Target_Results_Dir"}/gzshared/$yr/*/*/*/$test_name{$jid}/*$sstr*);
+      if ( ($opts{v}) || ($opts{d}) ) {print "final results directory -> $final_resting_dir\n"; }
+
+      # check to see if log file made it to the results directory already
+      my $log_file_moved = 0;
+      my  $res = `stat $final_resting_dir/*.log 2> /dev/null`;
+      unless ($?) {
+        $log_file_moved = 1;
+      }
+
+      # move the DRM files 
+       my $gfrd = glob($final_resting_dir);
+       foreach $f (@{$files{$jid}}) {
+         chomp $f;
+
+         # what looks like a redundant check for the jobid is necessary
+         # for the line with the special regex variables to work
+         if ($f =~ /$jid/) {
+           unless (($` =~ /$jid/) || ($' =~ /$jid/) ) {
+             # Check to see if destination dir is writeable
+	     # before trying to move it.
+             if (! -w $gfrd){
+                if ($opts{v}) {print "$final_resting_dir is not writeable, orphan $f\n"; }
+                process_orphaned_moab_file($f);
+                next;
+             }
+             if ($opts{d}) {
+               print "would move $outputdir/drmlogdir/$f to $final_resting_dir\n";
+             } else {
+               if ($opts{v}) {print "moving $outputdir/drmlogdir/$f to final results directory\n"; }
+               system("mv -f $outputdir/drmlogdir/$f $final_resting_dir/\n");
+               system("chmod 660 $final_resting_dir/$f\n");
+             }
+           }
+         }
+       }
+
+       # If the tld still has files in it then they need to be copied too.
+       # Just copy existing files, not move ( may be using preserve mode )  
+
+       if ( -e $tld{$jid} ) {
+         # Add feature to run epilog script for tests where no log results were found.
+         # Probably this is for tests that have reached time limit.
+         process_epilog($tld{$jid},$final_resting_dir) unless $log_file_moved;
+         my @files = `ls $tld{$jid}`;
+         foreach $f (@files) {
+           chomp $f;
+           if ((! -e $f ) && ( ! -d $f )) {
+             if ($opts{d}) {
+               print "would copy $tld{$jid}/$f to $final_resting_dir\n"; 
+             } else {
+               if ($opts{v}) {print "copy - $tld{$jid}/$f to $final_resting_dir\n"; }
+               system("cp -f $tld{$jid}/$f $final_resting_dir/\n");
+             }
+           }
+         }
+       }
+
+   }
+
+} else {
+  print "No Moab files to clean up\n";
+}
+
+
+# Clean up orphaned moab files directory.
+# oldays is arbitrary, just something to keep a cap on it.
+  my $oldays = 7;
+  while (<$drm_orph_dir/*>) {
+    if (-f && $oldays < -M _) {
+      if ($opts{d}) {
+       print "would delete $_ from $drm_orph_dir\n";
+      } else {
+       unlink or warn "--Could not unlink $_: $!";
+      }
+    }
+  }
+
+
+# Clean up working space(s) directories older than 48 hours. 
+# This should clean up jobs that are bombing out before completion or timing out
+#foreach $d (`find $ENV{'GZHOME'}/test_exec/*/working_space -maxdepth 2 -name gz_dontpreserve -mtime +2 -print`) {
+
+  my $tws;
+  if ( (exists $ENV{'GZ_WS_ROOT'}) && ($ENV{'GZ_WS_ROOT'} ne "" ) ) {
+      $tws = $ENV{'GZ_WS_ROOT'};
+      chomp $tws;
+  } else {
+      $tws = "$ENV{'GZHOME'}/test_exec/*/working_space";
+      chomp $tws;
+  }
+
+  foreach $d (`find $tws -maxdepth 1 -type d -ctime +1 -print`) {
+    chomp($d);
+    if ( -o $d) {
+      if ($opts{d}) {
+          print "would run 'rm -rf  $d'\n";
+       } else {
+         `rm -rf $d`;
+       }
+    }
+  }
+
+exit;
+
+sub process_orphaned_moab_file {
+
+  # Moab output files that don't seem to have a home (maybe final job output dir was clobbered) and
+  # are older than a couple days need to be moved to keep them from filling up the top level results directory.
+
+  my $file = shift;
+  chomp($file);
+
+  # leave around for a day in case of file system hiccup
+  my $mldays = 2;
+
+  if ( (-f "$outputdir/drmlogdir/$file" ) && ($mldays < -M "$outputdir/drmlogdir/$file") ) {
+    if ($opts{d}) {
+       print "would move $file to $drm_orph_dir\n";
+    } else {
+      if ($opts{v}) { print "moving $outputdir/drmlogdir/$file to $drm_orph_dir\n"; }
+      system("mv -f $outputdir/drmlogdir/$file $drm_orph_dir/\n");
+      system("chmod 660 $drm_orph_dir/drmlogdir/$file\n");
+    }
+  } else {
+    if ($opts{d}) { print "  will orphan $file when it's older than $mldays day(s) old\n"; }
+  }
+
+
+}
+
+sub process_epilog {
+
+  my $logdir = shift;
+  my $finaldir = shift;
+  my $epilog_filedir = dirname($logdir);
+       
+  if ($opts{v}) {
+    print "will run epilog command in $epilog_filedir, if available\n";   
+  }
+
+  # find and run the epilog command
+
+  if (-e "$epilog_filedir/gzconfig" ) {
+     do "$epilog_filedir/gzconfig";
+  } else {
+     if ($opts{v}) {print "no gzconfig file found, no more done\n"; }
+  }
+
+  my $outfile = "$finaldir/post-run-output";
+
+  if ( (exists $test_config{'EPILOG'}) && ( $test_config{'EPILOG'} ne "" )) {
+    if ( -e "$epilog_filedir/$test_config{'EPILOG'}" ) {
+#      open(PRO, "+>", $outfile)  or die ( "*** Unable to create $outfile, $!\n");
+#      print PRO " -- file created with $test_config{'EPILOG'} command -- \n";
+#      close (PRO);
+      if ($opts{v}) { print "running $epilog_filedir/$test_config{'EPILOG'} command\n"; }
+      `cd $finaldir; touch post-run-output; \
+        echo " -- file created with $test_config{'EPILOG'} command -- \n" >> post-run-output; \
+        $epilog_filedir/$test_config{'EPILOG'} >> post-run-output`;
+    }
+  } else {
+     if ($opts{v}) {print "EPILOG not defined no more done\n"; }
+  }
+
+}
+
+## -------------------------------------------------------------- ##
+
+# make a list of job ids whose drm files are still in the top level results directory
+# save the test_name, start_time, and tld while we are at it.
+
+# uniqueness is determined by jid. If the system has had time to wrap and re-use the jid's
+# I guess the old ones are history.  ??
+
+sub get_moab_ids {
+
+   my $drmdir = $gazebo_conf{"Target_Results_Dir"} . "/drmlogdir";
+   my @moabs = `ls $drmdir | grep -v ":"`; 
+   undef %files;
+   @moab_jids = ( );
+
+   my ($moab_file,$jid,$type,$x,$y,@mf);
+   foreach $moab_file ( @moabs ) {
+      chomp $moab_file;
+      next if ( -d "$drmdir/$moab_file" );
+
+      if ( $moab_file =~ /\.OU/ ) {
+        ($jid,$x,$type) = split '\.',$moab_file;
+        $jid =~ s/\s//g;
+        @nada = glob(qq($drmdir/$jid.*.OU)); 
+        push ( @{$files{$jid}}, $moab_file);
+      } elsif ($moab_file =~ /\.o(\d+)/) {
+        $jid = $1;
+        @nada = glob(qq($drmdir/*.o$jid)); 
+        push ( @{$files{$jid}}, $moab_file);
+      } elsif ($moab_file =~ /\.ER/) {
+        ($jid,$x,$type) = split '\.',$moab_file;
+        $jid =~ s/\s//g;
+        @nada = glob(qq($drmdir/$jid.*.ER)); 
+#     print "add $moab_file to files{$jid} hash\n";
+        push ( @{$files{$jid}}, $moab_file);
+      } elsif ($moab_file =~ /\.e(\d+)/) {
+        $jid = $1;
+        @nada = glob(qq($drmdir/*.e$jid)); 
+        push ( @{$files{$jid}}, $moab_file);
+      } else {
+        # not a Moab file I recognize
+        next;
+      }
+      # $mf includes file plus path
+      $mf = $nada[0];
+
+      # Get start time
+      # This should be the first line in the file
+      $y = `grep '^-- start time:' $mf`; 
+      if ($0) {
+        chomp $y;
+        @nada = split( ' ', $y);
+        my @nada1 = split( 'T', $nada[3]);
+        my @tm = split('-', $nada1[0]);
+        $start_date{$jid} = "$tm[1]-$tm[2]-$tm[0]";
+        $start_date{$jid} =~ s/\s//g;
+      }
+
+      # get testname 
+      $y = `grep 'GZ_TESTNAME' $mf`; 
+      if ($0) {
+        @nada = split( '=', $y);
+        $test_name{$jid} = $nada[1];
+        chomp($test_name{$jid});
+      }
+
+      # get temp log directory 
+      my $tmp1 = `grep '^tld ->' $mf`;
+      if ( $tmp1 eq "" ) {
+        if ($opts{v}) { print "notice : no tld found in $mf\n"; }
+      } else {
+        $tmp1 =~ s/\n.*$//; # gets rid of new line
+        $tmp1 =~ s/tld ->\s//; # get rid of the tld part
+        $tld{$jid} = $tmp1;
+      }
+
+      push(@moab_jids,$jid);
+
+   }
+   # remove dup job ids from list
+   my %seen = ();
+   my @moab_jids = grep { ! $seen{ $_ }++ } @moab_jids;
+   #print "@moab_jids\n";
+
+}

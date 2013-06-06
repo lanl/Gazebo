@@ -1,0 +1,164 @@
+#!/usr/bin/perl
+#
+
+require "getopts.pl";
+use Getopt::Std;
+use File::Basename;
+use Sys::Hostname;
+our $host = hostname;
+
+use Cwd 'abs_path';
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+my $GH = "$pwd";
+
+our %opt;
+$opt{t} = "";
+$opt{m} = "";
+$opt{l} = "";
+$opt{s} = "";
+$opt{e} = "";
+$opt{g} = "";
+# setup arguments as switches or ones that require strings  
+&getopts( "g:t:m:l:s:e:apfhuv", \%opt);
+
+
+my $running_or_queued = "";
+my $pes;
+my $params;
+my $tn;
+my $my_cus;
+my ( $end, $start );
+our @lf;
+
+# print usage if h option set
+if ($opt{h}) { usage(); exit; }
+
+if ( "$opt{e}" ne "" ) {
+    $end = `date -I -d "$opt{e}"`;
+    chomp($end);
+}
+else {
+    $end = `date -I`;
+    chomp($end);
+}
+
+if ( "$opt{s}" ne "" ) {
+    $start = `date -I -d "$opt{s}"`;
+    chomp($start);
+}
+else {
+    $start = `date -I -d "15 days ago $end"`;
+    chomp($start);
+}
+
+print "\t searching -> $gazebo_conf{'Target_Results_Dir'} \n\n";
+
+# select the group directories to look through  
+my $tg;
+my @grps = ();
+my $me = `whoami`;
+chomp $me;
+
+# only look at gzshared in ACT mode
+push(@grps, "gzshared");
+
+my $group;
+my $cmd, $cmd2;
+my $td;
+foreach $group (@grps) {
+  $cmd = "$GH/find_test_dirs -s $start -e $end -g $group";
+
+
+  my @fields;
+  my $ld;
+  foreach $_ (`$cmd`) {
+    chomp;
+
+    # skip null strings
+    next if ( $_ eq "" );
+
+    @fields = split /\//, $_;
+    $ld = pop(@fields);
+
+    #skip log if name starts with a number
+    next if ( $ld =~ /^\d/ );
+
+    #get name, cu, jobid, and time of this test run
+    my @tmpstr = split( /\./, $ld );
+    my $arrlen = $#tmpstr + 1;
+    if ( $arrlen != 2 ) {
+        next;
+    }
+    my $testTime = $tmpstr[1];
+    my @tmpstr1  = split( /_/, $tmpstr[0] );
+    my $testCU   = $tmpstr1[2];
+    my $testName = $tmpstr1[0];
+    my $testjid  = $tmpstr1[1];
+    @lf = glob("$_/trend*");
+    print "checking: $lf[0] \n" if ($opt{v});
+
+
+    if ("$opt{t}" ne "") {
+        #skip this log if user not looking for this particular test
+        next if ( $ld !~ /$opt{t}/i );
+    }
+
+    if ("$opt{m}" ne "" ) {
+        #skip this log if user not looking for this particular machine segment 
+        next if ( $ld !~ /$opt{m}/ );
+    }
+
+    # get number of pe's this test ran on
+    my $pes = "";
+    if ( -r "$_/machine" ) {
+        $pes = `grep -m 1 "<npes>" $_/machine | gawk '{ print \$2 }'`;
+        chomp($pes);
+    }
+    else {
+      next;
+    }
+
+    # get unique test parameters this test ran with
+    my $params = "";
+    if ( -r $lf[0] ) {
+        $params = `grep -m 1 "<params>" $lf[0] | gawk -F"> "  '{ print \$2 }'`;
+        chomp($params);
+    } else {
+      next;
+    }
+
+    # build the unique test name to hash on
+    $tn = $testName . "." . $pes . "(" . $params . ")" ;
+
+    # get the trend data values 
+    $cmd2 = "cat $lf[0]";
+    foreach $td (`$cmd2`) {
+      chomp $td;
+      print "$tn $testjid $testTime $td\n"; 
+    }
+
+  }
+} # each group loop
+
+print "\n";
+
+exit;
+
+sub usage {
+
+    print "\n\n";
+    print "              -h help \n";
+    print "              -a 'Acceptance Testing Mode. Default is Production Test Mode'\n";
+    print "              -e 'Analyze logs ending on yyyy-mm-dd, default is today'\n";
+    print "              -f 'show where the results are located for failed tests'\n";
+    print "              -m 'Show the results for a particular segment name. Exact match necessary'\n";
+    print "              -p 'show where the results are located for passing tests'\n";
+    print "              -s 'Analyze logs starting on yyyy-mm-dd, default is last 15 days'\n";
+    print "              -t test_name. 'Show test_name only. Partial name will work'\n";
+    print "              -u 'show where the results are located for undefined tests'\n";
+    print "              -v 'verbose mode'\n";
+    print "\n\n";
+
+}

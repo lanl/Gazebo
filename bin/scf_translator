@@ -1,0 +1,176 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# Description:
+# Translates an old-format submit_configs file (test Suite) to the new name-value pair format
+
+# HELP section
+if (( @ARGV[0] eq "" ) || (@ARGV[0] eq "-h") || (@ARGV[0] eq "-H") || (@ARGV[0] eq "help")) {               # print help message
+   $use = <<EOF;
+
+Usage: $0 <type1_submit_configs_file>
+
+   -h print this message.
+
+Notes:
+   Use the name of the original submit_configs file as the only argument.  The newly 
+   translated file will be named <original_name>.nvp (for "name-value pair").
+
+EOF
+   print "$use\n";
+   exit;
+}
+
+
+# use name of file as argument to this script
+$oldfile = @ARGV[0];
+$newfile = $oldfile.".nvp";
+
+# get processors per node from gazebo.conf
+$config_file = "$ENV{'GZHOME'}/gazebo.conf";
+$csline = `grep -m 2 Cluster_Segment_ $config_file | grep -v ^#`; chomp $csline;
+@cslineval = split ',', $csline;
+$ppn = @cslineval[2]; chomp $ppn;
+$num_nodes = @cslineval[1]; chomp $ppn;
+$num_procs = $num_nodes * $ppn; chomp $num_procs;
+
+if (!($ppn)) {
+    print "Can't get processors per node from gazebo.conf.  Exiting...\n"; exit;
+} else {
+    print "Processors per node = $ppn\n";
+}
+
+
+print "Translating Gazebo submit_configs file $oldfile to name-value pair format $newfile\n\n";
+
+# read old-format submit_configs file
+open(OLDFILE, "$oldfile") || die("$0: Open of $oldfile failed: $!\n");
+open(NEWFILE,"> $newfile");
+
+while (<OLDFILE>) {
+    chomp;                  # no newline
+    s/#.*//;                # no comments
+    s/^\s+//;               # no leading white
+    s/\s+$//;               # no trailing white
+    next unless length;     # anything left?
+    print "$_\n";
+
+    # note - priority is a deprecated feature
+    $name = $npes = $percent = $priority = $time_limit = $node_list = $test_exe = $test_params = "";
+    ($name, $npes, $percent, $priority, $time_limit, $node_list, $test_exe, $test_params) = split '\s', $_, 8;
+
+    # validate name
+    if ($name =~ "__") {
+        print "test name must not contain a double-underscore\n";
+        print "skipping this line...\n\n";
+        next;
+    }
+
+    # validate percent
+    if ($percent > 100) { $percent = 100; print "WARNING, percent being set to 100\n"; }
+    if ($percent < 1)   { $percent = 1;   print "WARNING, setting nodes to 1\n"; }
+
+    # calculate nodes
+    $fp_nodes = ($npes / $ppn);
+    $int_nodes = int($npes / $ppn);
+    if ($fp_nodes > $int_nodes) {
+        $nodes = $int_nodes + 1;
+    } else {
+        $nodes = $int_nodes;
+    }
+
+    # validate or fix nodes and npes
+    if ($nodes > $num_nodes) { print "WARNING, nodes exceeds number available\n"; }
+    if ($nodes < 1) { $nodes = 1; print "WARNING, setting nodes to 1\n"; }
+    if ($npes  > $num_procs) { print "WARNING, processors exceeds number available\n"; }
+    if ($npes  < 1) { $npes  = 1; print "WARNING, setting npes to 1\n"; }
+
+    # build up optional parameter list
+    if ($node_list eq "*") { 
+        $node_list = "";
+    } elsif ($node_list eq "-") {
+        $node_list = " nl:=-";
+    } else {
+        $node_list = " nl:=\"$node_list\"";
+    }
+
+    if (($percent eq "*") || ($percent eq "-")) { 
+        $percent = "";
+    } else {
+        $percent = " perc:=$percent";
+    }
+
+    if (($test_exe eq "*") || ($test_exe eq "-") || $test_exe eq "") {         
+        $test_exe = "";
+    } else {
+        $test_exe = " exec:=$test_exe";
+    }
+
+    if ($test_params ne "") {         
+        $test_params = " pl:=$test_params";
+    } 
+
+
+    if ((!($name)) || (!($npes)) || (!($time_limit))) {
+        print "BAD line - missing from (name/npes/time_limit)\n";
+    } else {
+        print "name:=$name nodes:=$nodes pes:=$npes tl:=$time_limit$node_list$percent$test_exe$test_params\n\n";
+        print NEWFILE "name:=$name nodes:=$nodes pes:=$npes tl:=$time_limit$node_list$percent$test_exe$test_params\n";
+    }
+} 
+
+close (OLDFILE);
+close (NEWFILE);

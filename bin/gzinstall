@@ -1,0 +1,165 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# utility for initial install of Gazebo client from either a tar ball
+# or a RPM install
+
+use Getopt::Std;
+use File::Basename;
+
+$opts{d} = "";
+getopts("d:h",\%opts);
+my ($use, $gzhome);
+my $gzbin;
+my $tarInstall = 0; 
+our %opts;
+
+# help usage
+$use = <<EOF;
+
+Usage: $0  
+   
+   -h print this message.
+   There are no other arguments to $0
+
+EOF
+
+if ( $opts{h} ) {
+   print "$use\n";
+   exit;
+}
+
+print "Was this an install from a tar ball?  (Y/N)"; $inp = lc(<>);
+if ($inp =~ "y") {
+  $tarInstall = 1; 
+} 
+
+# If no GZBIN, prompt user to add GZBIN to shell startup file and set GZBIN
+if (exists $ENV{'GZBIN'} ) {
+    $gzbin = $ENV{'GZBIN'};
+} else {
+    print "please add GZBIN to your PATH and start up file.\n";
+    exit;
+}
+
+# If no GZHOME, prompt user to add GZHOME to shell startup file and set GZHOME
+if ( exists $ENV{'GZHOME'} ) {
+    $gzhome = "$ENV{'GZHOME'}";
+} else {
+    print "please add GZHOME to your PATH and start up file.\n";
+    exit;
+}
+
+# don't clobber GZHOME if a tar ball install
+unless ($tarInstall) {
+  # check for existence of gzhome directory
+  if (-d $gzhome) {
+    print "\nWARNING! $gzhome already exists!  Would you like to\n";
+    print "overwrite $gzhome with a new installation?  (Y/N)"; $ow = lc(<>);
+    if ($ow =~ "y") {
+        print "\nOverwriting $gzhome with new installation...\n";
+        `rm -rf $gzhome; mkdir $gzhome`;
+    } else {
+        print "\nInstallation cancelled\n";
+        exit;
+    }
+  } else {
+    # if directory not there, create directory
+    print "Creating directory $gzhome\n";
+    `mkdir $gzhome`;
+  }
+}
+
+# where appropriate copy README, include, gazebo.conf, submit_config, submit_tracking,
+# test_exec, docs into their correct places and set up missing directories
+
+# create submit_config subdirectory
+print "Creating submit_configs subdirectory...\n";
+`mkdir $gzhome/submit_configs`;
+`cp $gzbin/../include/test_config_example $gzhome/submit_configs`;
+
+# create submit_tracking subdirectory
+print "Creating submit_tracking subdirectory...\n";
+`mkdir $gzhome/submit_tracking`;
+
+# create test_exec subdirectory
+print "Creating test_exec subdirectory...\n";
+`mkdir -p $gzhome/test_exec`;
+`chmod g+s $gzhome/test_exec`;
+`mkdir -p $gzhome/test_exec/simple`;
+`cp $gzbin/../include/simple/* $gzhome/test_exec/simple`;
+
+# copy example gazebo.conf to $gzhome
+`cp $gzbin/../include/gazebo.conf.example $gzhome/gazebo.conf.example`;
+
+# setup template database config file in $gzhome
+`cp $gzbin/../include/dbcfg $gzhome/.dbcfg`;
+`chmod 700 $gzhome/.dbcfg`;
+
+# tar install should already have docs and include
+unless ($tarInstall) {
+  # copy appropriate docs info to $gzhome
+  `mkdir -p $gzhome/docs`;
+  `cp $gzbin/../docs/*.txt $gzhome/docs`;
+  `cp $gzbin/../docs/README $gzhome/docs`;
+
+  # create include subdirectory
+  print "Creating include subdirectory...\n";
+  `mkdir $gzhome/include`;
+  `cp $gzbin/../include/runit.example $gzhome/include`;
+  `cp $gzbin/../include/gzconfig.example $gzhome/include`;
+  `cp $gzbin/../include/makeit.example $gzhome/include`;
+}
+

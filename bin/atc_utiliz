@@ -1,0 +1,252 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2010, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2010. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+#ATC produce reports of test run node coverage
+
+use Time::Local;
+require "$ENV{'GZBIN'}/gzsubs.pl";
+
+our $Debug = 0;    # on/off printing of debug output to log file
+
+$now = `date "+%m-%d_%H:%M"`;
+chomp($now);
+our $pwd;
+
+our ( %opts, %TestCoverage, %RunTime );
+our $pct;
+our $pctDone      = 0.0;
+our $missing_info = "";
+our $ct;
+our ($earliestStart, $latestEnd, $totalWallClockTime) = "";
+our (
+    $test, $line, @lines, $logfile, $node, $nodelist, @nodes, $i, $j, $k, $e,
+    $c, $jj, $s, $completedTests, @nada, @cluster_segs, %npes,
+    @tests, $path, $ls, @logs, $n, %TestTime, %CUTime,
+    %target_run_mins,  @cus,       %truns,       %total_time_run,
+    @master_test_list, %tests_run, %test_Params, $total_nodes
+);
+
+# ------ get gazebo config values -------------- #
+
+use Cwd 'abs_path';
+use File::Basename;
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+unless ( do "$pwd/get_gazebo_config" ) {
+    die "get_gazebo_config failed!";
+}
+
+# each Cluster_Segment line = CU,number_of_nodes,cpus_per_node,gigabytes_mem_per_node
+$i = $gazebo_conf{"Cluster_Segments"};
+@cluster_segs = split ',', $i;
+
+
+# ------ got gazebo config values -------------- #
+
+our $DebugLog = "$ENV{'GZHOME'}/DebugOutput";
+
+## ------------------------------------------------------- ##
+
+# compute list of cus and their respective names
+our %mxnames_to_cunumber = ();
+our %cunumber_to_mxnames = ();
+$n = @cluster_segs;
+for ( $i = 0 ; $i < $n ; $i++ ) {
+    @nada = split ',', $gazebo_conf{"Cluster_Segment_$cluster_segs[$i]"};
+    $cus[$i]                                  = $nada[0];
+    $npes{ $nada[0] }                         = $nada[2];
+    $mxnames_to_cunumber{ $cluster_segs[$i] } = $nada[0];
+    $cunumber_to_mxnames{ $nada[0] }          = $cluster_segs[$i];
+}
+
+## ------------------------------------------------------- ##
+
+use Getopt::Std;
+
+$opts{g} = "$ENV{'GZGRP'}";
+$opts{d} = "/usr/projects/splunk/results/machUtil";
+$opts{s} = "";
+$opts{e} = "";
+$opts{S} = "";
+$opts{E} = "";
+$opts{u} = "";
+getopts( "g:D:d:t:s:S:u:e:E:x:hACv", \%opts );
+
+$me = "$0";
+if ( $opts{h} ) {
+    $i = <<EOF;
+This script simply calculates the system utilization over the time desired.
+
+Usage:  $me -u seg_name [-h] [ -d <data file> ] 
+	[-s YYYY-MM-DD] [-S HH:MM:SS] [-e YYYY-MM-DD] [-E HH:MM:SS]
+
+          where:
+                -h print help message
+                -d file to calculate data from, default is $opts{d} 
+                -e Analyze logs ending on yyyy-mm-dd, default is today
+                -E Analyze logs ending at HH:MM:SS, default is 23:59:59, -e is today if not provided 
+                -s Analyze logs starting on yyyy-mm-dd, default is last 15 days ago
+                -S Analyze logs starting at HH:MM:SS, default is 00:00:00. -s is today if not provided
+                -u name of segment to analyze
+
+EOF
+    print "$i\n";
+    exit;
+}
+
+
+if ($Debug) {
+    open( DEBOUT, ">$DebugLog" )
+      or die "Can't open $DebugLog for writing: $!\n";
+}
+
+
+
+
+if ( "$opts{u}" eq "" ) {
+  print " * Error, no machine segment specified. Must use '-u' option with segment(s) - @cluster_segs\n\n";
+  exit;
+}
+my $seg_name = "$opts{u}";
+print "\n-- Analyzing segment $seg_name -- \n";
+
+
+my ( $end, $start );
+my $today = `date '+%Y-%m-%d'`;
+chomp $today;
+my $d;
+
+if (( "$opts{E}" ne "" ) || ( "$opts{e}" ne "" ))  {
+
+  if ( "$opts{e}" ne "" ) {
+    $d = `date '+%Y-%m-%d' -d "$opts{e}"`;
+  } else {
+    $d = $today;
+  }
+
+  if ( "$opts{E}" ne "" ) {
+    $end = `date '+%Y-%m-%d %H:%M:%S' -d "$d $opts{E}"`;
+  } else {
+    $end = `date '+%Y-%m-%d %H:%M:%S' -d "$d 23:59:59"`;
+  }
+}
+# catch bogus entries
+if ( $end eq "") {
+    $end = `date '+%Y-%m-%d %H:%M:%S' -d "$d 23:59:59"`;
+}
+chomp($end);
+
+if (( "$opts{S}" ne "" ) || ( "$opts{s}" ne "" ))  {
+
+  if ( "$opts{s}" ne "" ) {
+    $d = `date '+%Y-%m-%d' -d "$opts{s}"`;
+  } else {
+    $d = $today;
+  }
+
+  if ( "$opts{S}" ne "" ) {
+    $start = `date '+%Y-%m-%d %H:%M:%S' -d "$d $opts{S}"`;
+  } else {
+    $start = `date '+%Y-%m-%d %H:%M:%S' -d "$d 00:00:00"`;
+  }
+}
+
+# catch bogus entries
+if ($start eq "" ) {
+    $start = `date -I -d "15 days ago"`;
+}
+chomp($start);
+
+print "  - Utilization summary from $start through $end ...\n";
+
+# set up data file to read 
+chomp($opts{d});
+$file = $opts{d};
+if ( !-e "$file" ) {
+    print "*** Unable to find file $file. Aborting.\n";
+    exit;
+} else {
+    print "*** Using data file $file\n";
+}
+
+my $totalUtil = 0;
+my $numVals = 0;
+my $avgUtil;
+my @fields;
+
+  open (FILE,"$file") || die "*** Unable to open utilization file ($file) for reading: $!\n";
+     while ( <FILE> ) {
+        next if (/^\s*#/); # skip comment lines
+        next if (/hostname=$seg_name/); # only use lines for selected segment 
+        chomp;
+        $line = $_;
+        next if ( $line eq "" );
+        @fields = split " ", $line;
+        @util = split "=", $fields[5];
+#        print "util = $util[1]\n"; 
+        if ( $util[1] > 0 ) {
+          $totalUtil = $totalUtil + $util[1];
+          $numVals++;
+        }
+
+      }
+  close(FILE);
+
+$avgUtil = $totalUtil / $numVals;
+print "Avg util over time  = $avgUtil\n"; 
+
+
+exit;

@@ -1,0 +1,26 @@
+#!/usr/bin/perl
+ 
+($prog = $0) =~ s!.*/!!;
+
+
+print "Job_Id   Name   Owner     State           Queue,entry-time                 Resources\n";
+
+my $jid;
+my $owner;
+my @vals;
+
+  $cmd = 'showq -r'; 
+  open(OUT, "$cmd |");
+  while (  <OUT> ) {
+    if ($_ =~ /^\d+\s/) {
+      @vals = split(/ /, $_);
+      $jid = $vals[0];
+      $owner = $vals[6]; 
+      print "$jid  $owner R\n";
+    }
+  }
+  close (OUT);
+
+  print "\n";
+
+exit;

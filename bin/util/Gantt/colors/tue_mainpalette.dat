@@ -1,0 +1,9 @@
+# TU/e main palette for use with GNUplot
+# Ranging through support palette in reversed main palette
+247 49 49   # PMS Warm Red, 0C 100M 90Y 0K, HEX F73131 
+214 0 74    # PMS 206, 0C 100M 50Y 0K, HEX D6004A 
+214 0 123   # PMS 226, 10C 100M 0Y 0K, HEX D6007B
+173 32 173  # PMS 253, 50C 90M 0Y 0K, HEX AD20AD
+16 16 115   # PMS 2748, 100C 80M 0Y 20K, HEX 101073
+0 102 204   # PMS 300, 100C 50M 0Y 0K, HEX 0066CC
+0 162 222   # PMS Process Cyan, 100C 0M 0Y 0K, HEX 00A2DE

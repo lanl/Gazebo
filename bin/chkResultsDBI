@@ -1,0 +1,198 @@
+#!/usr/bin/perl -w
+
+# script which prints a quick summary of the RR test logs 
+#
+# modified to support data in MySQL database
+# 1/2007 add start and end time ranges and
+# ability to handle new log dir structure
+# 12/2006, initial creation. C. Idler
+
+require "getopts.pl";
+use Getopt::Long;
+use File::Basename;
+use Sys::Hostname; our $host = hostname; 
+#use strict;
+use DBI;
+
+(my $prog = $0) =~ s/.*\///;
+
+$opt_h = '';
+$opt_f = '';
+$opt_p = '';
+$opt_c = '';
+$opt_s = '';
+$opt_e = '';
+$opt_v = '';
+
+# tell getopt that the t, c, s and e options require an argument
+&GetOptions( "p", "f", "h", "v", "t=s", "m=s", "s=s", "e=s");
+
+
+my $totalTests = 0;
+my $totalTestsPassed = 0;
+my $thisTestPassed;
+my %totalThisTest;
+my %passed;
+my %failedTests;
+my %passedTests;
+my $pes;
+my $tn;
+my $my_cus;
+my %seen;
+my ($end, $start);
+
+  # print usage if h option set
+  if ($opt_h) { usage(); exit; }
+
+  if ( "$opt_e" ne "" ) {
+   $end = `date -I -d "$opt_e"`;
+   chomp($end);
+  } else {
+   $end = `date -I`;
+   chomp($end);
+  }
+
+  if ( "$opt_s" ne "" ) {
+   $start = `date -I -d "$opt_s"`;
+   chomp($start);
+  } else {
+   $start = `date -I -d "15 days ago $end"`;
+   chomp($start);
+  }
+
+  print "\n *** RR Test log synopsis ***\n"; 
+  print "\tAnalysis between $start and $end ...\n\n";
+
+# collect result set from DB here
+
+my $dsn = "DBI:mysql:gazebo:eureka"; # data source
+my $user_name = "gazebo";
+my $password = "ez2gaz";
+my %attr =
+(
+   RaiseError => 0,
+   PrintError => 0,
+   AutoCommit => 1
+);
+
+
+#connect to the DB
+my $dbh = DBI->connect ($dsn, $user_name, $password, \%attr)
+        or die_handler( "cannot connect to database");
+
+# only ask for results for jobs/test submitted from this cluster
+chomp $host;
+
+my $sth;
+if ($opt_m) {
+ # looking for a particular cu
+  $sth = $dbh->prepare("SELECT test_name,num_procs,seg_name,job_id,result,log_ptr FROM results_tbl where start_time >= '$start' AND start_time <= '$end 23:59:59' AND host = '$host' AND seg_name = '$opt_m' order by test_name") or die "Can't prepare SQL stmt: ", $dbh->errstr(), "\n";
+
+} else {
+  $sth = $dbh->prepare("SELECT test_name,num_procs,seg_name,job_id,result,log_ptr FROM results_tbl where start_time >= '$start' AND start_time <= '$end 23:59:59' AND host = '$host' order by test_name") or die "Can't prepare SQL stmt: ", $dbh->errstr(), "\n";
+}
+
+$sth->execute() or die "Can't execute SQL seg_id select: ", $sth->errstr(), "\n";
+
+     while (my @fields = $sth->fetchrow_array()) {
+
+      #get name, cu, jobid, and time of this test run
+      my $testName = $fields[0];
+      my $pes = $fields[1];
+      my $testCU = $fields[2];
+      my $testjid = $fields[3];
+      my $status = $fields[4];
+      my $log_dir = $fields[5];
+
+      if ($opt_t) {
+      # skip this entry if not looking for this particular test 
+      # could have handled this with the DB, but wanted to handle partial names
+	next if ($testName !~ /$opt_t/i);
+      }
+
+      $tn = $testName . "(" . $pes . ")"; 
+
+      $totalTests++;
+      $totalThisTest{$tn}{$testCU}++;
+      
+      #create a list of all the CU's being checked 
+      $seen{$testCU}++;
+      if ($seen{$testCU} == 1) { push (@my_cus, $testCU) }; 
+
+      print "\t$testCU, $testName\n" if ($opt_v);
+
+      if ($status =~ /pass/) { 
+          $totalTestsPassed++;
+	  $passed{$tn}{$testCU}++;
+	  push (@{$passedTests{$tn}{$testCU}},"$log_dir") if ($opt_p);
+      }
+      else { # test failed, save the failing log directory name
+	  # stored values are references to arrays
+	  push ( @{$failedTests{$tn}{$testCU}},"$log_dir");
+      }
+    }
+
+
+$dbh->disconnect();
+
+
+#  foreach $k ( sort(keys (%totalThisTest)) ) {
+#    print "$k\n"; 
+#  }
+
+  my @sorted_cus = sort(@my_cus);
+  foreach $cu ( @sorted_cus) {
+      if ($opt_c) {
+	next if ($cu !~ /cu$opt_c/);
+      }
+    print "\n$cu:\n"; 
+    foreach $kt ( sort(keys (%totalThisTest)) ) {
+      if (exists $totalThisTest{$kt}{$cu}) {
+        if (!exists $passed{$kt}{$cu}) {
+          $passed{$kt}{$cu} = 0;
+	}
+        print "\t$kt - total_runs:$totalThisTest{$kt}{$cu}, passed:$passed{$kt}{$cu}\n"; 
+      }
+      if ( ($opt_f) && (exists $failedTests{$kt}{$cu}) ) {
+         print "\t failed - \n"; 
+         foreach $val (@{$failedTests{$kt}{$cu}}) {
+	    print "\t  $val\n";	
+	 } 
+      }
+      if ( ($opt_p) && (exists $passedTests{$kt}{$cu}) ) {
+         print "\t passed -  \n"; 
+         foreach $val (@{$passedTests{$kt}{$cu}}) {
+	    print "\t  $val\n";	
+	 } 
+      }
+    }
+  }
+
+  if (!$opt_t) {
+    print "\n\nResults: Tests Evaluated = $totalTests, Passed = $totalTestsPassed  \n";
+  }
+
+  exit;
+
+sub usage {
+
+    print "\n\n";
+    print "usage: chkResults \n";
+    print "              -h help \n";
+    print "              -m 'Show the results for a particular segment name. Exact match necessary'\n";
+    print "              -f 'show where the results are located for failed tests'\n";
+    print "              -p 'show where the results are located for passing tests'\n";
+    print "              -s 'Analyze logs starting on yyyy-mm-dd, default is last 15 days'\n";
+    print "              -e 'Analyze logs ending on yyyy-mm-dd, default is today'\n";
+    print "              -v 'verbose mode'\n";
+    print "              -t test_name. 'Show test_name only. Partial name will work'\n";
+    print "\n\n";
+
+}
+
+# error handling routine
+sub die_handler {
+      my $message = shift;
+      die "$message\nError $DBI::err ($DBI::errstr)\n";
+}
+

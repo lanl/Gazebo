@@ -1,0 +1,197 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+
+# Description:
+# Reformats the output from pbsnodes into a shortened form similar to bpstat.  Calls
+# qstat to get names of which user owns which nodes.
+#
+# February 2007, Ernie Buenafe
+
+use XML::LibXML;
+use Getopt::Long;
+use Pod::Usage;
+use Sys::Hostname;
+use Switch;
+
+$| = 1;
+$ENV{'PATH'} = '/bin:/usr/bin/:/opt/MOAB/bin';        # Untaint $PATH
+
+# Untaint $0
+if ($0 =~ /^([ &:#-\@\w.]+)$/) { $0 = $1; }
+else { die "Bad data, exiting.\n"; }
+
+&GetOptions("help","man","U");
+exit(1) if $Getopt::Long::error;
+
+if ($opt_man) {
+    $> = $< = getpwnam("nobody") or getpwnam("nouser") or -2 if $> == 0;
+    pod2usage(-verbose => 2);
+}
+pod2usage(-verbose => 1) if $opt_help;
+
+my $prev_cu;
+my $prev_jobid;
+my $state;
+my $jobid;
+my $user;
+my $cu;
+my $node;
+my $nodelist;
+my @nodelines;
+my %pbsnodes;
+my %User;
+
+my $md = `which mdiag`;
+chomp $md;
+my $MDIAG = "$md -n --format=xml";
+$MDIAG = "$MDIAG --host=$destination" if defined $destination;
+my $output = `$MDIAG`;
+$output =~ s/^\s+//;
+$output =~ s/\s+$//;
+my $parser = new XML::LibXML();
+my $doc = $parser->parse_string($output);
+my $root = $doc->getDocumentElement();
+
+foreach my $pbsNode ($root->getChildrenByTagName("node")) {
+    my %nodeAttr;
+    my %xloadAttr;
+
+    foreach my $attr ($pbsNode->attributes()) {
+	my $name  = $attr->nodeName;
+	my $value = $attr->nodeValue;
+	$nodeAttr{$name} = $value;
+
+    }
+
+    $state = $nodeAttr{NODESTATE};
+    $state =~ tr/A-Z/a-z/;
+    $node = $nodeAttr{NODEID};
+    $features = $nodeAttr{FEATURES};
+    print "node: $node, state: $state, features = $features \n";
+
+    $pbsnodes{$node} = "$state:$jobid:$user";
+}
+
+=head1 NAME
+
+=over 4
+
+=item rrstat - display node status
+
+=head1 SYNOPSIS
+
+=item B<rrstat [-help] [-man]>
+
+=item B< >
+
+=item B<rrstat [-U] [>I<node_list>B<] [@destination]>
+
+=head1 DESCRIPTION
+
+=item Display node status
+
+=back
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-h, -help>
+
+Print this command's help message and exit.
+
+=item B<-m, -man>
+
+Print this command's manual page and exit.
+
+=item B<-U>
+
+Continuously update node status display (not enabled yet).
+
+=item I<node_list>
+
+A comma separated list of nodes or states.
+
+=item B<@destination>
+
+Display node status on remote server I<destination>
+
+=head1 EXAMPLES
+
+=item B<rrstat> <no options>
+
+Display status of all nodes.
+
+=item B<rrstat n01-011,n14-020>
+
+Display status of node n01-011 and node n14-020.
+
+=item B<rrstat idle,down>
+
+Display status of only those nodes in the I<idle> or I<down> states.
+
+=item B<rrstat @rrz>
+
+Display status of all nodes on I<rrz>.
+
+=head1 AUTHOR
+
+=item Ernie Buenafe
+
+=back
+
+=cut

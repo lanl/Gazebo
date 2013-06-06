@@ -1,0 +1,14 @@
+#!/bin/bash
+
+#for i in ppp spp
+for i in ppp
+do
+	for j in shuffle sort cut fold
+	do
+		for k in bw lat
+		do
+			$GAZHOME/bin/util/anal $i $j $k $* > ./$i.$j.$k.tbl
+			echo
+		done
+	done
+done

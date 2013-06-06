@@ -1,0 +1,3152 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2012, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2012. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# Gazebo Acceptance Testing Component (ATC)
+# Run jobs as defined in submit_configs file
+#
+
+
+# 1. The primary function of this script is to submit jobs to the scheduler. 
+# 2. A secondary focus is to track how many minutes each test runs
+#    on each node of each segment
+# 3. Future work is to slurp up interesting system events during a run
+#    for correlation analysis in the event of a system failure of some type.
+
+
+# Gazebo Job submission for Moab, Torque, and Slurm environments
+
+# Original Author: Rick Light
+# Updates, changes, etc. starting 12/07, Craig Idler
+
+
+my  ( 	$i,$k,$tst,$percent_this_test,$total_time_so_far,$nnodes,@nada,
+	%sorted,$j,$outputdir,$test,$ntests,%nruns,%expected_time,$test_exec,
+ 	$use,$NodeList,$n,$m,$jid,$kruns,$tmptmp,@tmpdirs,
+	$tmp_time,$total_time_needed,$tmpcu,$nodes_unavail,$testParams,
+        $num_nodes_actually_available
+    );
+
+
+# yikes, look at all these global variables. I'll be fixing bugs forever...  cwi
+our (	%opts,$cu,$kill_file,$test_home,$test_name,%total_time_run,%mytotal_time_run,%mytime_run,%target_run_mins,
+	$Nodes,%state,$verbose_off,$verbose_on,$tracking_file,$config_file,@this_test_list,%mytarget_run_mins,
+	$repeat_test,%dont_copy,@tests,%chkjobWait,$tmp,@seg_config,@cluster_segs,%test_config,%finaldir,$zstat,
+	$npes,$priority,$tl,$tmpjid,@master_test_list,@mymaster_test_list,%jobid_list,%mytest_executable,
+	$submit_log,$Now,%time_limit,%Knpes,$total_pes,%mytruns,%totaltruns,%truns,@allcus,@cus,$ncus,%test_name,
+	%exec_file,$npes_per_node,%tests_run,%mytests_run,%mycumtests_run,$index,$ls,%moabWait,$seg_name,@segments,
+	$lock_file,$summary_file,$jid_list_file,$partition,
+	$num_avail_nodes,$wait_res,%job_nodes,$pwd,$segname_len,$node_digits,$interrupt,$node_start_num,
+	$nametmp,$tmpdir,$logFile,$live_nodes,$dead_nodes,$node_delim,$node_name_form,$fastcopymode,
+	$doneyet,$output,$useMsub,$useppn,$includefilename,%test_Params,%mytest_Params,%test_NameExt,
+        $total_jobs_submitted,$Nruns_submitted,$Nruns_passed,$Nruns_failed,$Nruns_undef,$numSlrmNodes,%noTmpDir,
+	$startup_file,$startup,$loopWait,$read_tf,%LOCALjobid_list,%shortname_jobid_list,$margs,%msub_args,$tP
+    );
+
+our (@spin,$spin_count);
+$spin_count = 0;
+@spin = ( '/','-','\\','-' );
+
+$loopWait = 20;	# default is to check status every 20 seconds
+$loopWait = 6; ################################ testing only ########################
+%total_time_run = ();
+
+
+### ------------------------------------------------------------------ ###
+### ------------------------------------------------------------------ ###
+
+# set the following to change the specific command used to submit jobs:
+# NOTE: be sure to set the job dispatcher to moab/torque or moab/slurm if you use qsub
+
+$useMsub = 1;	# set to 1 to use msub, 0 to use qsub 
+
+$useppn  = 1;	# set this to 0 to exclude the ppn= portion of msub/qsub commands
+                # (set this to 1 for LANL)
+
+### ------------------------------------------------------------------ ###
+### ------------------------------------------------------------------ ###
+
+
+use IO::File;
+use File::Basename;
+use Getopt::Std;
+require "$ENV{'GZBIN'}/gzsubs.pl";
+
+$opts{A} = "";
+$opts{u} = "";
+$opts{H} = "";
+$opts{J} = "";
+$opts{q} = "";
+$opts{c} = "";
+$opts{C} = "";
+getopts("A:C:c:H:J:u:q:TtEFvfhiLSsdmrxpbR",\%opts);
+
+# ------ get gazebo configuration values from master config file gazebo.conf -------------- #
+
+
+use Cwd 'abs_path';
+use File::Basename;
+$pwd = dirname(abs_path("$0"));
+chomp($pwd);
+unless ( do "$pwd/get_gazebo_config") {
+  die "get_gazebo_config failed!";
+}
+
+if ( $opts{E} || $opts{h} ) {  #  help info 
+  provide_help_info();
+  exit;
+}
+
+
+# Keep track of GZ_RUNHOME for each test when in 
+# copy fast mode, opts{f}.
+%dont_copy = {};
+$fastcopymode=0;
+
+$test_home = $ENV{'GZHOME'};	# base directory where everything resides
+# each Cluster_Segment line = feature,number_of_nodes,cpus_per_node,node_regex,node_start_num
+$i = $gazebo_conf{"Cluster_Segments"};
+my @csegs = split ',',$i;
+foreach $s (@csegs) {
+  $s =~ s/^\s+//; # remove leading spaces
+  $s =~ s/\s+$//; # remove trailing spaces
+  my $newlen = push(@cluster_segs, $s);
+}
+
+my $user = `whoami`;
+   chomp($user);
+   $ENV{'GZ_USER'} = "$user";
+
+$| = 1;       # turn off all output buffering
+
+$Now = `date "+%m-%d_%H:%M:%S"`;
+chomp($Now);
+
+# Prepare top level output director space.
+# atc runlog now placed in directory below this high level result dir.
+# drm logs also placed in a subdir to keep away from splunk processing.
+my $runlogdir;
+my $drmlogdir;
+$outputdir = $gazebo_conf{"Target_Results_Dir"};
+if ( ! $opts{d} ) {
+   if (! -e "$outputdir" ) { system("mkdir -p $outputdir\n"); }
+   $runlogdir = "$outputdir/runlogdir";
+   if (! -e "$runlogdir" ) { system("mkdir -p $runlogdir\n"); }
+   $submit_log = $runlogdir . "/atc_run.$Now.log";
+   $drmlogdir = "$outputdir/drmlogdir";
+   if (! -e "$drmlogdir" ) { system("mkdir -p $drmlogdir\n"); }
+} else {
+   $submit_log = $test_home . "/atc_run.$Now.log";
+}
+open (SUBMITLOG,">$submit_log") or
+   Bomb( "*** Unable to open submit logfile $submit_log for writing: $!\n");
+
+# Number of these run log files could get unwieldy. Let's clean up logs older
+# than runlog_lifetime (defined in gazebo.conf file) days here. 
+my $rldays = 1;
+if (defined $gazebo_conf{"runlog_lifetime"}) { $days = $gazebo_conf{"runlog_lifetime"}; }
+while (<$runlogdir/*.log>) {
+    if (-f && $rldays < -M _) {
+       # print "\n Deleting::: $_\n";
+       unlink or warn "--Could not unlink $_: $!";
+    }
+}
+
+# Initialize segment variables and check for validity 
+$seg_name = "$opts{u}";       	# get target segment name from command line
+if ( "$seg_name" eq "" ) {
+   # seg_name not entered
+   print SUBMITLOG "*** No target machine segment specified, exiting!\n";
+   print " * Error, no machine segment specified. Must use '-u' option with segment(s) - @cluster_segs\n\n";
+   exit;
+}
+if (! grep( /^$opts{u}$/, @cluster_segs ) ) {
+   print SUBMITLOG "*** Invalid segment specified, exiting!\n";
+   print " * Error, supplied segment name is not one of - @cluster_segs\n\n";
+   exit;
+}
+@seg_config = split ',',$gazebo_conf{"Cluster_Segment_$seg_name"};
+$partition = $seg_config[0];
+$num_avail_nodes = $seg_config[1];	# number of compute nodes per segment
+$npes_per_node = $seg_config[2];	# number of processors per node
+$segname_len = $gazebo_conf{"Segment_Name_Length"};
+$node_digits = $gazebo_conf{"Max_Node_Digits"};
+$node_delim = $gazebo_conf{"Node_Name_Delimiter"};
+$node_name_form = $seg_config[4];  # node name regular expression
+$node_start_num = $seg_config[5]; 
+if (  ($segname_len eq "") ||
+      ($node_digits eq "") ||
+      ($node_start_num eq "") ||
+      ($node_name_form eq "")
+   ) {
+	print " * Error, either segname length, node_digits, node_regex, or node_start_num is not properly defined!\n Check your gazebo.conf file for correctness\n";
+     exit; 
+   }
+
+## ------------------------------------------------------------- ##
+
+# compute list of cus and their respective names
+@allcus = ( );
+our %mxnames_to_cunumber = ( );
+our %cunumber_to_mxnames = ( );
+$n = @cluster_segs;
+for ( $i=0; $i<$n; $i++ ) {
+   @nada = split ',',$gazebo_conf{"Cluster_Segment_$cluster_segs[$i]"};
+#   $partitions[$cluster_segs[$i]] = $nada[0];
+   $allcus[$i] = $i;
+   $mxnames_to_cunumber{$cluster_segs[$i]} = $i;
+   $cunumber_to_mxnames{$i} = $cluster_segs[$i];
+}
+@cus = @allcus;
+
+## ------------------------------------------------------------- ##
+
+   @segments = ( "$seg_name" );
+   @cus = ( );
+   $n = @cluster_segs;
+   for ( $i=0; $i<$n; $i++ ) {
+      for ($k=0; $k<@segments; $k++ ) {
+         if ( "$segments[$k]" eq "$cluster_segs[$i]" ) {
+#            @seg_config = split ',',$gazebo_conf{"Cluster_Segment_$segments[$k]"};
+            $cus[$k] = $i;
+         }
+      }
+   }
+   $ncus = @cus;		# number of cus to be used for execution of these tests
+
+#print "ncus = $ncus, cus=@cus\nallcus=@allcus\n";
+#print "npes_per_node = $npes_per_node, num_avail_nodes = $num_avail_nodes\n";
+
+  if ( $ncus == 0 ) {
+      print " *** No valid machine segments specified. Valid entries are: @cluster_segs\n\n";
+    exit;
+  }
+
+#print "DEBUG: my cus are - @cus \n";
+
+$total_pes = $npes_per_node * $num_avail_nodes;	# max number of pes
+if ( $ncus > 1 ) { 
+   $total_pes = $total_pes * $ncus; 	# handle multi-cu cluster
+#   $cu = join '-', @cus;
+    foreach $tmpcu ( @cus ) {
+      $cu .= "$cunumber_to_mxnames{$tmpcu}-";
+    }
+    chop($cu);
+} else {
+   $cu = $cunumber_to_mxnames{$cus[0]};
+}
+
+$config_file 	= "$test_home/submit_configs/test_config_$seg_name";
+if ( "$opts{C}" ne "" ) { $config_file = "$test_home/submit_configs/$opts{C}"; }
+
+$lock_file 	= "$test_home/atc_run.lock.$seg_name";
+$jid_list_file 	= "$test_home/listjids.$seg_name";
+$summary_file 	= "$test_home/summary_report.$seg_name";
+$kill_file 	= "$test_home/killjobs.$seg_name";
+$verbose_off	= "$test_home/verbose_off";
+$verbose_on	= "$test_home/verbose_on";
+$tracking_file  = "$test_home/submit_tracking/test_tracking_$seg_name";
+
+
+print "Test submission logfile is $submit_log\n";
+print SUBMITLOG "------------------- Gazebo Submission Log ---------------------\n\nLogging begun $Now\n\n";
+
+$tmpjid  = 0;
+$total_jobs_submitted = $Nruns_submitted = $Nruns_passed = $Nruns_failed = $Nruns_undef = 0;
+
+@master_test_list = ( );
+@mymaster_test_list = ( );
+#$ENV{'PATH'} = "$test_home/bin:" . $ENV{'PATH'};
+$ENV{'PATH'} = "$ENV{'GZBIN'}:" . $ENV{'PATH'};
+
+# set up signal handling
+$SIG{'INT'} = \&ctlc_handler;
+$SIG{'QUIT'} = \&quit_handler;
+
+if ( $opts{x} ) {
+   # initialize tracking file from archive of completed runs
+   init_tracking_from_archive($seg_name, $tracking_file);
+   exit;
+} elsif ( $opts{r} ) {
+   # reset tracking to null
+   system("rm -f $tracking_file\n");
+   print SUBMITLOG "Tracking file reset.\n";
+   if (! $opts{t} ) { print "Tracking file removed.\n"; }
+}
+
+if ( -e "$tracking_file" ) {
+    read_tracking();
+}
+
+if ( $opts{T} ) {	# clear targeting array for node selection
+   foreach $test_name ( @master_test_list ) {
+      foreach $tmpcu ( @allcus ) {
+         $index = $test_name;
+         print "*** clearing  Targeting array for $index\n"; 
+         for ($i=$node_start_num; $i<($num_avail_nodes+$node_start_num); $i++ ) {
+            $mytarget_run_mins{$index}[$i] = "";
+         }
+      }
+     save_tracking($test_name);
+   }
+   exit;
+}
+
+
+# read test suite configuration 
+read_config();
+
+
+if ( $opts{v} ) { print SUBMITLOG "My local test list = @mymaster_test_list\n"; } 
+### ------------------------------------------------------------- ###
+
+unless ( $opts{t} ) { print "Beginning job submission(s) ... \n"; }
+# now submit the requested/required number of jobs for each test
+$ntests = @tests;
+AA:
+foreach $test ( @tests ) {
+  $npes = $Nodes = $tl = $test_exec = "";
+  $repeat_test = 1;
+  $tP = "";
+  my $testParams = "";
+
+   if ( -e "$kill_file" ) { killall();suicide(); }
+   chomp($test);
+   next if ( "$test" eq "" );
+   $NodeList = "";
+   # clean off any additions to the test name for display purposes
+   my $rtn =  $test;
+   $rtn =~ s/_Tp\d+//;
+   $ttn =~ s/\.\d+//;
+   unless ( $opts{t} ) {print "  process  -> $rtn\n"};
+   # new line parser - post cbench-integration to handle new test_config format
+   test_config_breakout($test);
+   $nruns{$test_name} = $repeat_test;
+   if (( "$tl" eq "-" ) || ( "$tl" eq "" )) { $tl = "01:00:00"; } 
+   if ( "$Nodes" ne "-" )  { 
+      $NodeList = "$Nodes";
+   } else {
+      if ( ! $opts{F} ) { 
+         $NodeList = "*";
+      }
+   }
+
+ # need to snag em again from gzconfig file if not defined here
+   $testParams = $tP;  
+   if ( $tP eq "") {
+     my ($k,$i) = split '\.',$test_name;
+     $testParams = get_params_from_gzconfig($k);
+   }
+   $testParams =~ s/\"//g;
+
+
+   # handle msub args supplied by user. Specific args supplied with the margs
+   # value in the submit config file override
+   # any args supplied with the "A" option supplied with atc_run command
+   if (  ( $margs eq "") && ( $opts{A} ne "" ) ) {
+       $margs = "-A " . $opts{A};
+   }
+
+   # see if we are to rebuild (make) the test first
+   if ( $opts{m} ) {	# make each test before running it 
+      $j = "$test_name";
+      $j =~ s/\s//g;
+      $j =~ s/\..*$//;
+      next AA if ( "$j" eq "" );
+      unless ( $opts{t} ) {
+         print SUBMITLOG "Building test $j ...\n";
+         print "Building test $j ...\n";
+      }
+      $i = system("(cd $test_home/test_exec/$j;$test_home/test_exec/$j/makeit > /tmp/makeit.out$$)\n");
+      $k = `cat /tmp/makeit.out$$`;
+      `rm -f /tmp/makeit.out$$`;
+      print SUBMITLOG "$k\n";
+      if ( $i != 0 ) {	# build procedure failed
+         print SUBMITLOG "*** Build procedure failed for $j, skipping this test.\n\n";
+         print "\n*** Build procedure failed for $j, skipping this test.\n\n";
+         next AA;
+      }
+   }
+   # If user has said run each test n times, then override computed n times.
+   # Abort if entered n times is not a valid number
+   if ( "$opts{c}" ne "" ) { 
+      if ( $opts{c} !~ /\D/ ) { 
+         $nruns{$test_name} = $opts{c};
+      } else {
+         print SUBMITLOG "*** -c option contains invalid number: $opts{c}. Aborting.\n\n";
+         print "*** -c option contains invalid number: $opts{c}. Aborting.\n\n";
+         exit;
+      }
+   }
+
+   # submit runs for each test here
+
+   if ( $opts{F} ) {
+    print SUBMITLOG "Submitting $nruns{$test_name} runs for - $test_name:\n";
+#    $i = sprintf("%.2f",(($expected_time{$test_name} * 100.0) / $total_time_needed));
+#    $k = sprintf("%.2f",($expected_time{$test_name}));
+#    $j = $k * 60.0;
+#    print SUBMITLOG "   Mix for full coverage is $i\% which could take up to $j minutes ($k hours).\n";
+#    unless ( $opts{t} ) {
+      print "Submitting $nruns{$test_name} runs for test $test_name\n";
+#      print "   Mix for full coverage is $i\% which could take up to $j minutes ($k hours).\n";
+#    }
+   }
+
+   # see what nodes are up and what are down, note what are down
+   #$nnodes = $npes / $npes_per_node;  # old node calculation method
+
+   if ( "$Nodes" ne "*" ) {
+
+      # note which nodes are available at this time
+      if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+        $live_nodes = `$ENV{'GZBIN'}/good_nodes`;
+      } else {
+        my $i =~ /$node_name_form/;        # $1=seg name, $2=node number
+        $live_nodes = `$ENV{'GZBIN'}/good_nodes -u "$1"`;
+      }
+      $live_nodes =~ s/\n/,/g;
+      chop($live_nodes);
+
+
+#print "DEBUG: live nodes are $live_nodes\n";
+
+      # see if the number of runs desired for full coverage can be submitted
+      @nada = split ',',$live_nodes;
+      $k = @nada;
+      $num_nodes_actually_available = $k;
+      $j = sprintf("%d",($k/$nnodes));
+      $i = $nruns{$test_name} - $j;
+
+      if (( $i >= 0 ) && ($opts{H}) ) {
+         $nruns{$test_name} -= $i;
+         print SUBMITLOG "\n---  $test_name note: based on available nodes full coverage has been set to $nruns{$test_name} run(s)\n\n";
+         unless ( $opts{t} ) {
+            print "\n---  $test_name note: based on available nodes full coverage has been set to $nruns{$test_name} run(s)\n\n";
+         }
+      }
+
+      # note which nodes are down at this time
+      $dead_nodes = `$ENV{'GZBIN'}/down_nodes`;	# list of down nodes
+      $dead_nodes =~ s/ Down\n/,/g;
+      chop($dead_nodes);
+      
+      if ( "$dead_nodes" ne "" ) {
+         $Now = `date "+%m/%d %H:%M:%S"`;
+         chomp($Now);
+         print SUBMITLOG "$Now ---  Note: the following node(s) are DOWN:\n$dead_nodes\n";
+         unless ( $opts{t} ) {
+            print "$Now ---  Note: the following node(s) are DOWN:\n$dead_nodes\n";
+         }
+      }
+   }
+
+   if (( "$opts{H}" ne "" ) && ( $opts{d} )) {
+      # just printing out what would the -H do 
+      print "Normal -H/-d termination\n";
+      exit;
+   }
+
+   $output = 0;
+   for ($kruns=0; $kruns<$nruns{$test_name}; $kruns++) {
+
+      my $fully_qualified_name;
+      if ( $testParams eq "") {
+         $fully_qualified_name = $test_name . "." . "$nnodes" . "x"        . "$npes";
+      } else {
+         my $tphash = tPsymbol($testParams);
+         $fully_qualified_name = $test_name . "." . "$nnodes" . "x"        . "$npes" . "_Tp" . "$tphash";
+      }
+
+      if ( $Nodes eq "-" ) {
+      # use least used nodes (tiling) 
+         if ( $num_nodes_actually_available >= $nnodes ) {
+           $Nodes = reserve_nodes($fully_qualified_name, $seg_name, $nnodes);
+           next if ($Nodes eq "");
+         }
+      }
+
+      $total_jobs_submitted++;
+
+      if (( "$Nodes" eq "" ) && ( ! $opts{F} )) {	# desired nodes are not operational at this time
+         if ( $opts{v} ) { print SUBMITLOG "Unable to choose nodes $nodes_unavail for $test_name, skipping this submission.\n"; }
+         print "Unable to choose nodes $nodes_unavail for $test_name, skipping this submission.\n";
+         next;
+      }
+
+      if ( $opts{v} ) { print SUBMITLOG "\n\n---- Nodes selected for $test_name include $Nodes\n"; }
+
+      # submit the test to run. If not a (*), Nodes is space separated list of node names
+      $Nodes =~ s/,/ /g;
+      $Nodes =~ s/=/ /g;
+
+      print SUBMITLOG "\nSubmitting $test_name at ".`date`;
+      $i = "$test_name";
+I99:
+      $interrupt = 0;
+
+      $jid = submit_test("$test_name",
+                         "$npes",
+                         "$nnodes",
+                         "$Nodes",
+                         "$tl",
+                         "$test_exec",
+                         "$testParams",
+                         "$margs",
+                         "$test");
+
+      if ( $interrupt ) { goto I99; }
+
+      # skip everything if job submission failed due to down node or other reason
+      if ( "$jid" eq "" ) { 
+         unless ( $opts{d} ) {
+           print SUBMITLOG "*** NULL jid for test $i.\n"; 
+           print "*** NULL jid for test $i.\n"; 
+         }
+         # clean up the created working dir after unsucessful job submission
+         system("rm -rf $ENV{'TARGET_WD'}\n");
+         next;
+      }
+      $Nruns_submitted++; # only increment if jobid is returned
+
+      my ($j,$i) = split '\.',$jid;
+#      $test_name =~ s/\s//g;
+#      if ( $testParams eq "") {
+#         $test_name = $test_name . "." . "$nnodes" . "x"	. "$npes";
+#      } else {
+#         my $tphash = tPsymbol($testParams);
+#         $test_name = $test_name . "." . "$nnodes" . "x"	. "$npes" . "_Tp" . "$tphash";
+#      }
+      foreach $tmpcu ( @cus ) {
+         $tmpcu =~ s/\s//g;
+#         $index = "$tmpcu".":$test_name";
+          $index = "$tmpcu".":$fully_qualified_name";
+
+         if (( ! defined $jobid_list{$index} ) || ( "$jobid_list{$index}" eq "" )) {
+            $jobid_list{$index} = "$jid";
+         } else {
+            $jobid_list{$index} .= ",$jid";
+         }
+         $LOCALjobid_list{$index} .= " $jid";
+         $shortname_jobid_list{$index} .= " $j";
+      }
+      print SUBMITLOG "\t** $test_name submitted as jobid=$jid on nodes $Nodes\n";
+      
+      $job_nodes{$jid} = "$Nodes";
+      $job_nodes{$jid} =~ s/,/\]\[/g;
+      $job_nodes{$jid} = "\[" . $job_nodes{$jid} . "\]";
+      $state{$jid} = 0;
+#      $jid = $j;
+
+   }
+
+}
+
+if ( $opts{v} ) {
+   print SUBMITLOG "Job id array is as follows:\n";
+   foreach $index ( keys %jobid_list ) {
+      print SUBMITLOG "\nJobs for $index:  $jobid_list{$index}\n";
+   }
+}
+
+if ((! $opts{b} ) && (! $opts{d} )) {
+   wait_for_completion();
+   # no return - exit is from wait routine
+} else {
+   $i = list_jobids("short");
+   $i =~ s/--- Monitoring.*//;
+   print "\nThe following jobs have been submitted:\n$i";
+   print "Normal no-wait termination.\n";
+   print SUBMITLOG "\nThe following jobs have been submitted:\n$i";
+   print SUBMITLOG "Normal no-wait termination.\n";
+}
+   system("rm -f $lock_file\n");
+   exit;
+
+### ----------------------------------------------------------------- ###
+
+# routine to submit a job for execution
+sub submit_test {
+   my (
+	$targetdir,$tmpcu,$test,$npes,$nodes,$nnodes,$command,$ppn,$star_mode,
+	$jobid,$n,$m,$q,$i,$where_run,@nada,$tl,$mcu,$startdate,
+	$pid,$selppn,$fork_count,$testParams,$Now,$test_exec_file,$tn,$x,
+        $test_line,$margs,$cleNodes
+      );
+
+   $test 	= "$_[0]";
+   $test =~ s/(.*)\..*$/$1/;		# remove ".size" at end of test name
+   $npes 	= "$_[1]";
+   $nnodes 	= "$_[2]";    # number of nodes requested by user
+   $nodes 	= "$_[3]";    # specific nodes requested by user
+   $tl 		= "$_[4]";
+   $test_exec_file = "$_[5]";
+   $testParams	= "$_[6]";    # user supplied test specific parameters
+   $margs	= "$_[7]";    # user supplied msub argument(s) 
+   $test_line	= "$_[8]";
+
+
+#print "DEBUG: submit_test with nodes => $nodes\n";
+
+   # configuration info for where to find the tests
+   $tn = $test;
+#   if ( $test =~ /-/ ) { ($tn,$x) = split '-',$test; }
+
+ # save the name of directory where this test is located
+   $where_run = "$test_home/test_exec/$tn";	# base directory of test-specific files
+   $ENV{GZ_TESTHOME} = $where_run;
+
+
+# ----
+# this whole section where the test specific test_config variables get set globally needs to
+# become more localized per test. Problems arise when one test has a new variable and it
+# hangs around forever.
+
+# getting bit by tcsh not being able to handle undefined ENV vars, initialization 
+# to cover for deficencies in tcsh here
+   $ENV{'GZ_PROLOG'} = "";
+   $ENV{'GZ_EPILOG'} = "";
+   $ENV{'GZ_COMPILER'} = "";
+   $ENV{'GZ_MPILIB'} = "";
+   $ENV{'GZ_JOBSIZE'} = "";
+
+# some initialization for now. Make each test define what it needs 
+   if (defined %test_config) {
+     my $k;
+     foreach $k ( keys(%test_config) ) {
+       delete $ENV{"GZ_$k"} if defined $ENV{"GZ_$k"};
+     }
+     undef %test_config;
+   };
+
+   if (-e "$where_run/gzconfig" ) {
+     do "$where_run/gzconfig";
+   } else {
+      print "No gzconfig file found for $tn, skipping job submission for this test.\n";
+      print SUBMITLOG "gzconfig file for $tn not found, skipping job submission for this test.\n";
+      return("");
+   }
+
+   foreach $n ( keys %test_config ) {
+      # spaces cause moab problems (yes, a know bug). put in "_"'s for the moment
+      unless (($n =~ /PARAMS/) || ( $n =~ /MV2WS/)) {
+        $test_config{"$n"} =~ s/\s/_/g;
+      }
+      next if ( $n =~ /DESCRIPTION/ );
+      $ENV{"GZ_$n"} = $test_config{"$n"};
+   }
+   if ( "$testParams" ne "" ) { $ENV{'GZ_TEST_PARAMS'} = "$testParams"; }
+
+
+   # Handle decision to run in fastcopy mode for each test. 
+   # This means use the same working space over and over for each
+   # test run of the same name.
+   # Test specific FASTCOPY flag (if set in gzconfig) takes precedence.
+   if ($ENV{'GZ_FASTCOPY'} eq "TRUE") {
+     $fastcopymode = 1;
+     if ( $opts{v} ) {print "using fastcopy mode\n";}
+   } elsif ($ENV{'GZ_FASTCOPY'} eq "FALSE") {
+     $fastcopymode = 0;
+   } elsif ($opts{f}) {
+     $ENV{'GZ_FASTCOPY'} = "TRUE";
+     $fastcopymode = 1;
+     if ( $opts{v} ) {print "using fastcopy mode\n";}
+   } else {
+     $ENV{'GZ_FASTCOPY'} = "FALSE";
+     $fastcopymode = 0;
+   }
+
+
+# -----
+
+
+   $ENV{'NPES'}           = "$npes";
+   $ENV{'GZ_NPES'}        = "$npes";
+   $ENV{'GZ_NNODES'}        = "$nnodes";
+#   $ENV{'GZ_CU'}          = "$cu"; # name of segment or list of segments with "-"s
+   $ENV{'GZ_CU'}          = "$seg_name"; # name of segment or list of segments with "-"s
+   $ENV{'GZ_ATC'}         = "yes";	
+   $ENV{'GZ_RESOURCEMGR'} = $gazebo_conf{"Job_Dispatcher"};
+   $ENV{'GZ_SITE'}	  = $gazebo_conf{"Site"};
+
+   # if user specified specific executable, override CMD from config file
+   chomp($test_exec_file);
+   if (( "$test_exec_file" ne "-" ) && ( "$test_exec_file" ne "" )) { 
+      $ENV{'GZ_CMD'}	= "$test_exec_file";
+   }
+
+   $x = basename($ENV{'GZ_CMD'});
+   $ENV{'GZ_TESTNAME'}  = "${test}";
+   $ENV{'GZ_TESTEXEC'}  = "$x";
+
+  # do some checking to make sure executable is just that
+  if (! -x "$where_run/$ENV{'GZ_TESTEXEC'}" ) {
+    print "  WARNING: $where_run/$ENV{'GZ_TESTEXEC'} is NOT executable!, not submitting job\n";
+    print SUBMITLOG "  WARNING: $where_run/$ENV{'GZ_TESTEXEC'} is NOT executable!, not submitting job\n";
+    next;
+  }
+
+   $x = $test;
+   if ( $x !~ /\./ ) { $x .= "\.$nnodes" . "x" . "$npes"; }
+   $mytest_executable{$x} = $ENV{'GZ_CMD'};
+#print "DEBUG: mytest_executable{$x} - $mytest_executable{$x}\n";
+   my $tNameExt = tPsymbol("$testParams");
+   if ( "$tNameExt" ne "" ) { $x .= "_Tp" . $tNameExt; }
+
+   # jobid accounting code to track missing job output
+   my $acc_date = `/bin/date +%Y-%m-%d`;  chomp $acc_date;
+   my $acc_time = `/bin/date +%Y-%m-%d_%T`;  chomp $acc_time;
+   my $acc_dir = "$outputdir/accounting";
+   if (! -e "$acc_dir" ) { system("mkdir -p $acc_dir\n"); }
+   my $accounting_file = "$acc_dir/$acc_date";
+
+
+  # Logic for setting up the runtime working directory.
+  #
+  # First choice: if defined, uses the test specific target working dir defined in gzconfig 
+  # Second choice: if defined, uses the global root working space defined with GZ_WS_ROOT.
+  #   (in either case, if a list of ":" separated dirs, then select one randomly)
+  # Default: places working space under the test home directory
+  #
+
+   if ( (! exists ($ENV{'GZ_TARGET_WD'})) || ( $ENV{'GZ_TARGET_WD'} eq "" ) ) {
+     if ( (exists ($ENV{'GZ_WS_ROOT'})) && ( $ENV{'GZ_WS_ROOT'} ne "" ) ) {
+      my $tws = $ENV{'GZ_WS_ROOT'};
+      chomp $tws;
+      $ENV{'GZ_TARGET_WD'} = $tws;
+     }
+   }
+
+   # If the target WD is multiple ':' separated strings, need to pick one at random
+   if ( $ENV{'GZ_TARGET_WD'} =~ /:/ ) {
+       my @dirs = split(":", $ENV{'GZ_TARGET_WD'});
+       my $dirs = @dirs;
+       if ($dirs > 1) {
+         my $index = int(rand($dirs));
+         my $target = @dirs[$index];
+         $ENV{'GZ_TARGET_WD'} = $target;
+         print "Using random value for GZ_TARGET_WD: $ENV{'GZ_TARGET_WD'}\n" if ($opts{v});
+       } 
+   }
+
+   # initialize the job's time limit from the entry in the test suite 
+   $ENV{'GZ_TIMELIMIT'} = $tl;
+
+   # Define the temporary working space and copy test files there.
+   # If the fast copy option is set, then do only once for each test, otherwise do everytime.
+   if ( ($fastcopymode && (!exists $dont_copy{$ENV{'GZ_TESTNAME'}})) || (!$fastcopymode) ) {
+     $Now = `date "+%m-%d_%H:%M:%S.%N"`;
+     chomp($Now);
+     if ( "$ENV{'GZ_TARGET_WD'}" ne "" ) {	# user has designated a directory to use in test specific gzconfig file
+        $ENV{'GZ_RUNHOME'} = "$ENV{'GZ_TARGET_WD'}/$ENV{'GZ_TESTNAME'}__$ENV{'GZ_TESTEXEC'}.$Now";	# temp home directory for this run
+     } else {				# create a space for the user
+        $ENV{'GZ_RUNHOME'} = "$where_run/working_space/$ENV{'GZ_TESTNAME'}__$ENV{'GZ_TESTEXEC'}.$Now";	# temp home directory for this run
+     } 
+     $dont_copy{$ENV{'GZ_TESTNAME'}} = $ENV{'GZ_RUNHOME'};
+     print SUBMITLOG "$Now $0: create temp working space $ENV{'GZ_RUNHOME'}\n";
+     `mkdir -p -m 777 $ENV{'GZ_RUNHOME'}`;
+     # permit user to define what files and dirs to copy to working space
+     if ( (exists($ENV{'GZ_MV2WS'})) && ($ENV{'GZ_MV2WS'} ne "") ) {
+       my $cmd = "";
+       $cmd = "cd $where_run; rsync -a $ENV{'GZ_MV2WS'} $ENV{'GZ_RUNHOME'}";
+       print SUBMITLOG "  -- fill WS using: $cmd \n";
+       `$cmd`;
+       if ($?) {
+       # if rsync failed, return null jobid from this attempt to run this job
+         print "  -- rsync failed, aborting job (check your MV2WS parameter in gzconfig)\n";
+         print SUBMITLOG "  -- rsync failed, aborting job (check your MV2WS parameter in gzconfig) \n";
+         return "";
+       }
+     } else {
+     # copy everything in the test home (except a few obvious things) to working space
+       `rsync -a --exclude "working_space" --exclude "*.[ocfh]" --exclude "*.bck" --exclude "*.tar" --exclude "gzlogs" $where_run/ $ENV{'GZ_RUNHOME'}`;
+     }
+     if ( $opts{v} ) {print "using temp WD: $dont_copy{$ENV{'GZ_TESTNAME'}}\n";}
+   } else {
+     if ( $opts{v} ) {print "using existing temp WD: $dont_copy{$ENV{'GZ_TESTNAME'}}\n";}
+   }
+
+
+   $Now = `date "+%m-%d_%H:%M:%S"`;
+   chomp($Now);
+   print SUBMITLOG "$Now $0: temp working space setup complete\n";
+
+
+   if ( $opts{i} ) {
+      $ENV{'GZ_DBINSERT'} = "TRUE";  # flag to direct job results to be inserted into gazebo DB
+   }
+   if (!$opts{p} ) {
+     $ENV{'GZ_CLEANUP'} = "TRUE"; # flag to direct cleanup of working dir unless preserve flag set
+   }
+
+   $command = "$ENV{'GZBIN'}/setUpandRun"; # wrapper script called by msub/qsub which will in turn call user job script 
+
+   if ( $npes_per_node eq "" ) {
+     print "WARNING!, gazebo.conf file did not define number of processors per node, check file \n";
+     exit;
+   }
+
+   $ppn = $npes / $nnodes;
+   $ENV{'GZ_PESPERNODE'} = "$ppn";
+   if ( $nnodes < 1.0 ) { $nnodes = 1; }
+
+   $star_mode = 0;
+   if ( "$nodes" ne "" ) {
+      if ( "$nodes" eq "*" )  { 
+         # scheduler/RM selects nodes
+
+         $nodes = $nnodes; 
+         $star_mode = 1;
+         $numSlrmNodes = $nodes;
+	 $cleNodes = "nodes=$nodes:ppn=$ppn";
+
+      } else {
+         # list of nodes specified
+         # either user specified or tiling mode (nl:="-") specified
+
+         if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+
+            @nada = split ' ',$nodes;
+            $m = "\+";
+            $nodes = join "$m",@nada;
+	    $cleNodes = "hostlist=$nodes,nodes=$nnodes";
+            if ( $useppn ) {
+	       $cleNodes .= ":ppn=$ppn";
+	    }
+         } else {
+	    # normal mode requires qsub/msub format
+
+            @nada = split ' ',$nodes;
+            if ( $useppn ) {
+               $m = ":ppn=$ppn\+";
+               $nodes = join "$m",@nada;
+               $nodes .= ":ppn=$ppn";
+            } else {
+               if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-slurm" ) {
+                  $nodes =~ s/ /|/g;
+                  $numSlrmNodes = @nada;
+               } else {
+                  $nodes =~ s/ /\+/g;
+               }
+            }
+         }
+      }
+   } else {
+      # default, moab is selecting nodes by default
+      $nodes = "$nnodes"; 
+   }
+
+   $mcu = "";
+   $selppn = "";
+
+
+   if ( $ncus == 1 ) {		# single cu
+
+         if ( "$nodes" ne "" ) {
+#            $mcu = "$partitions[$cu]";
+            $mcu = $partition;
+         }
+         if ( $nodes == $nnodes ) {
+            if ( $useppn ) {
+               $selppn .= ":ppn=$ppn";
+            }
+         }
+
+   } else { 			# multiple cu
+
+      if ( $nodes =~ /\-/ ) {
+         if ( $useppn ) {
+            $mcu = ":ppn=$ppn";
+         }
+      } else { 
+         $mcu = $partition;
+         if ( $useppn ) {
+           $selppn .= ":ppn=$ppn";
+         }
+      }
+   } 
+
+#print "\t mcu - $mcu\n";
+
+   $q = "";
+   if ( "$opts{q}" ne "" ) {
+      $q = "-q $opts{q}";
+   } else {
+     if (exists $gazebo_conf{"default_queue"}) {
+       $q = qq(-q $gazebo_conf{"default_queue"});
+     }
+   }
+
+   if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "none" ) {
+      # no job scheduler is present
+      # command is just the direct execution of runit as defined above
+      $ENV{'GZ_NODES'}     = "$nodes";
+
+   } else {
+
+      my $host = `hostname`;
+      @nada = split '\.',$host;
+      $host = $nada[0];
+      chomp($host);
+
+      my  $filename_stdout = "/\%j.$host.OU";
+      my  $filename_stderr = "/\%j.$host.ER";
+
+      # job scheduler is present
+
+      if ( $useMsub ) {
+
+         if ( $opts{L} ) {	# use Livermore SWL environment
+            my ($swl_test_name, $swl_startdir, $swl_outfile, $swl_nodes,
+                $dependent_job_option, $gaz_stdout, $swl_env_list);
+
+#           Deconstruct the test name to get the SWL test name and
+#           starting SWL test directory name.
+
+            $swl_test_name = $test;
+            $swl_test_name =~ s/\@colon\@/\:/g;
+            @nada = split '\:',$swl_test_name;
+            $swl_startdir = "$ENV{'SWL'}\/$nada[0]";
+            $swl_test_name = $nada[1];
+            $swl_test_name =~ s/\@period\@/\./g;
+            $swl_test_name =~ s/\@dash\@/\-/g;
+            $swl_test_name =~ s/\@underscore\@/\_/g;
+
+#           Extract the number of nodes to use from the job script.
+
+            $tmp = `grep '#SWL' $swl_startdir/$swl_test_name | grep nodes`;
+            chomp($tmp);
+            @nada = split ' ',$tmp;
+            $swl_nodes = $nada[2];
+
+#           Set for for any dependent jobs.
+
+            $dependent_job_option = "";
+            if ("$ENV{'DEPENDENT_JOBID'}" ne "") {
+	       $dependent_job_option = "-l depend=$ENV{'DEPENDENT_JOBID'}";
+	    }
+
+#           Create an output file name.
+
+            $host =~ s/\d//g;
+            $gaz_stdout = "/\%j.$host.OU";
+
+#           Set up some additional environmental variables.
+
+            $ENV{'SWL_JOB'}   	     = "Yes";
+            $ENV{'SWL_BATCH_TYPE'}   = "MOAB";
+            $ENV{'SWL_JOB_NAME'}     = "$swl_test_name";
+            $ENV{'SWL_STARTDIR'}     = "$swl_startdir";
+            $ENV{'REGRESSION_FLAG'}  = "No";
+            $ENV{'GAZEBO_OUTPUTDIR'} = "$outputdir";
+            $ENV{'SWL_OUTPUT_FILE'}  = qq($swl_startdir/$swl_test_name);
+
+            $swl_env_list =
+"SWL_JOB,SWL_BATCH_TYPE,SWL_JOB_NAME,SWL_STARTDIR,REGRESSION_FLAG,GAZEBO_OUTPUTDIR,GZ_SITE,GZ_RESOURCEMGR,COMPILER,MPILIB,GZ_RUNHOME,GZHOME,GZ_TEST_PARAMS,GZ_CMD,GZ_DBINSERT,GZ_ATC,GZGRP,GZ_CU,GZ_TESTNAME,GZ_TESTEXEC,SWL_OUTPUT_FILE";
+	    if ("$ENV{'JOB_CYCLE_LIST'}" ne "") {
+                $swl_env_list = "$swl_env_list,JOB_CYCLE_LIST";
+	    }
+
+#           Construct the msub job submission line.
+
+            $command = qq(msub -l partition=lobo -v $swl_env_list -j oe -o $drmlogdir/$gaz_stdout -N $swl_test_name $q -l nodes=$swl_nodes,walltime=$tl $dependent_job_option $command);  # partition changed from hype to lobo
+
+         } else {
+
+           if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-slurm" ) {
+             if (! $star_mode ) { 
+               $command = qq(msub $margs -V -o $drmlogdir$filename_stdout -e $drmlogdir$filename_stderr -N $test $q -l nodes='$nodes',walltime=$tl $command);
+             } else {
+#               $command = qq(msub -V $margs -o $drmlogdir$filename_stdout -e $drmlogdir$filename_stderr -N $test $q -l nodes=$numSlrmNodes,feature='$nodes',walltime=$tl $command);
+#               $command = qq(msub -A lowprio -V $margs -o $drmlogdir$filename_stdout -e $drmlogtdir$filename_stderr -N $test $q -l nodes=$numSlrmNodes$selppn,feature=$mcu,walltime=$tl $command);
+               $command = qq(msub $margs -V -o $drmlogdir$filename_stdout -e $drmlogdir$filename_stderr -N $test $q -l nodes=$numSlrmNodes$selppn,feature=$mcu,walltime=$tl $command);
+             }
+           } elsif ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+             $command = qq(msub $margs -V -o $drmlogdir/ -e $drmlogdir/ -N $test $q -l $cleNodes,feature=$mcu,walltime=$tl $command);
+           } else {
+             # MOAB/torque
+             $command = qq(msub $margs -V -o $drmlogdir -e $drmlogdir -N $test $q -l nodes=$nodes$selppn,feature=$mcu,walltime=$tl $command);
+           }
+
+         }
+
+      } else {
+
+        if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+          my $ppnwidth = $nodes * $ppn;
+          $command = qq(qsub $margs -V -o $drmlogdir -e $drmlogdir -N $test -l mppwidth=$ppnwidth,mppnppn=$ppn,feature=$mcu,walltime=$tl $command);
+      } else {
+        $command = qq(qsub $margs -V -o $drmlogdir$filename_stdout -e $drmlogdir$filename_stderr -N $test $q -l nodes=$nodes$mcu,walltime=$tl $command);
+      }
+
+    }
+
+   }
+
+   if ( $opts{v} ) { print SUBMITLOG "\nNPES Requested: $npes\n" }
+   if ( $opts{v} ) {
+      print SUBMITLOG "\nSubmitting command: $command\n";
+      print "\nSubmitting command: $command\n";
+   }
+      print "  -> $command\n\n";
+
+   if ( $opts{d} ) {
+      if ( $opts{v} ) { print SUBMITLOG "--- Command NOT submitted.\n"; }
+      $jobid = "";
+
+   } else {
+
+      if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "none" ) {
+
+         # execute the test directly, TBD
+         $jobid = 0;
+
+      } else {
+
+         # submit the job
+         my $tmp;
+         $tmp = `$command`;
+         chomp($tmp);
+         $tmp =~ s/\s//g;
+         $tmp =~ /(\d*)\.*/;
+         $jobid = $1;
+
+
+         # file that keeps track of job submissions
+         `touch $accounting_file`;
+         open(OUT_ACCOUNTING,">> $accounting_file");
+         if ( $jobid eq "" ) {
+           print OUT_ACCOUNTING "Job Submission error, $acc_time, $test_line\n";
+         } else {
+           print OUT_ACCOUNTING "$jobid, $acc_time, $test_line\n";
+         }
+         close(OUT_ACCOUNTING);
+
+         if ( $opts{v} ) { print SUBMITLOG "Job ID returned = $jobid\n"; }
+      }
+   }
+
+   if ( "$jobid" ne "" ) {
+      $test_name{$jobid} = "$ENV{'GZ_TESTNAME'}";
+      $exec_file{$jobid} = "$ENV{'GZ_TESTEXEC'}";
+
+      print SUBMITLOG "\n-- Submission: $test_name{$jobid} $jobid $ENV{'GZ_RUNHOME'}\n";
+   }
+   return("$jobid");
+}
+
+### ----------------------------------------------------------------- ###
+
+# routine to wait for all jobs to complete
+sub wait_for_completion {
+   my (
+	$sjid,@sjids,$jobid,$tmpcu,$stuff,$test,@nada,$i,@jids,
+	$timeval,%dstate,$x,$y
+      );
+
+   # wait a bit, then enter main loop
+   # before/after waiting, check for user command files (that make us do something)
+   # (old way of getting things to happen, left in for no real reason)
+
+   if ( -e "$kill_file" ) { killall();suicide(); }
+   if ( -e "$jid_list_file" ) { $i = list_jobids(); print "$i\n"; }
+   if ( -e "$summary_file" ) { progress_summary(); }
+
+   if ( $opts{v} ) { print SUBMITLOG "Waiting for completion ... \n"; }
+
+   $i = $loopWait;
+   while ($i > 0) {
+     unless ( $opts{s} ) { 
+       spin_progress();
+     }
+     sleep 1;
+     $i--;
+   }
+   if ( -e "$kill_file" ) { killall();suicide(); }
+   if ( -e "$jid_list_file" ) { $i = list_jobids(); print "$i\n"; }
+   if ( -e "$summary_file" ) { progress_summary(); }
+   if ( -e "$verbose_off" ) { $opts{v} = 0; system("rm -f $verbose_off\n"); }
+   if ( -e "$verbose_on" ) { $opts{v} = 1; system("rm -f $verbose_on\n"); }
+
+   # main wait loop
+   my ($tn,$tp);
+   $stuff = "";
+
+TOP:
+   while(1) {
+       $Now = `date "+%m/%d %H:%M"`;
+       chomp($Now);
+
+       # loop for all job ids that are in the list created from submissions
+       foreach $index ( keys %jobid_list ) {
+
+
+         next if ( "$index" eq "" );
+         next if ( "$jobid_list{$index}" eq "" );
+
+         if ( $jobid_list{$index} =~ /,/ ) {
+            @jids = split ',',$jobid_list{$index};
+         } else {
+            @jids = ( "$jobid_list{$index}" );
+         }
+
+          my ($waste,$tmpP) = split ':',$index;
+
+         $test = $index;
+         if ( $test =~ /__/ ) {
+            ($tn,$tp) = split '__',$test;
+         } else {
+            $tn = $test;
+         }
+     
+         # for display purposes get rid of test parameter hash component of name
+         my ($shortName, $waste) = split (/_Tp/, $tn);
+
+         for ( my $qk=0; $qk<@jids; $qk++ ) {
+            $jobid  = $jids[$qk];		# full job id
+            next if ( "$jobid" eq "" );
+#            $sjid  = $sjids[$qk];		# just the job number
+             if ( $jobid =~ /^(\d*)\./) {
+               $sjid  = $1;
+             } else {
+               $sjid = $jobid;
+             }
+
+#print "Issuing checkjob command for $test jobid=$jobid\n";
+
+            if ( $opts{v} ) { print SUBMITLOG "Issuing checkjob command for $test jobid=$jobid ... \n"; }
+            if ( $opts{d} ) {
+               if ( ! defined $dstate{$jobid} ) { 
+                  $x = hours($time_limit{$test});
+                  $x = 3600 * $x;
+	          $stuff = "State: Idle\nreal $x\nuser 50.00\nsys 10.00\n"; 
+                  $dstate{$jobid} = "$stuff";
+               } else {
+                  $stuff = "$dstate{$jobid}";
+               }
+
+            } else {
+
+I1:
+               $interrupt = 0;
+               if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "none" ) {
+
+                  $stuff = check_nosched_jobs("$sjid");
+                  chomp($stuff);
+
+               } else {
+
+                  # issue checkjob command to get current status of each jid
+                  $stuff = `checkjob $jobid 2>> $submit_log`;
+                  chomp($stuff);
+               }
+               if ( $interrupt ) { goto I1; }
+            }
+
+            if ( $stuff =~ /ERROR/ ) {
+               unless ( $opts{t} ) { print "$Now *** Error encountered during checkjob command for jobid $jobid:\n\t$stuff\n"; }
+               print SUBMITLOG "$Now *** Error encountered during checkjob command for jobid $jobid:\n\t$stuff\n";
+               sleep 5;
+               next TOP;
+            }
+
+            # let user know we're still looping
+            unless ( $opts{s} ) { 
+               spin_progress();
+            }
+
+            # test to see if checkjob no longer knows about this job, or we 
+            # are waiting for moab output files
+            if (( defined $moabWait{$jobid} ) && ( "$stuff" eq "" )) { 
+               if ( $opts{v} ) { print SUBMITLOG "\tIgnoring checkjob output, just looking for Moab files ...\n"; }
+               goto JOBDONE;
+            }
+
+             if ( "$stuff" eq "" ) {
+               if ( defined $chkjobWait{$jobid} ) {
+                   sleep 1;
+                   next if ( scalar($chkjobWait{$jobid}--) > 0 );
+                   # we've tried n times to get chkjob output
+                   # now give up, stop monitoring this jid
+                   unless ( $opts{t} ) { print "$Now --- Cannot obtain status for $shortName ($mytest_Params{$tmpP}) job $sjid. Giving up on monitoring that job.\n"; }
+                   print SUBMITLOG "$Now --- Cannot obtain status for $shortName ($mytest_Params{$tmpP}) job $sjid. Giving up on monitoring that job.\n";
+#                   goto JOBDONE;
+		   remove_jid("$jobid","99");		# remove this job from the list
+                   $jobid = "";
+                   $output = 1;
+                   next;
+
+               } else {
+                  # otherwise, we will try n times to get status of this job
+                  $chkjobWait{$jobid} = 20;
+                  next;
+               }
+             }
+
+            ### ------------------------------------------------- ###
+
+            if ( $opts{v} ) { print SUBMITLOG "State for $test jid $sjid = $state{$jobid}\n"; }
+            if ( $opts{v} ) { print SUBMITLOG "Checkjob command returned:\n$stuff\n"; }
+            $wait_res = "UNKNOWN";
+            @nada = split "\n",$stuff;
+            my $tmp_index;
+            my $node_str; 
+            # find index into nada arrary where node data begins
+            for ( my $res=0; $res<@nada; $res++ ) {
+               next if (! ( $nada[$res] =~ /Allocated Nodes:/ ));
+               $tmp_index = $res+1; # next line
+               last;
+            }
+            # gather up all lines of node information
+            for ( my $res=$tmp_index; $res<@nada; $res++ ) {
+               chomp $nada[$res];
+               last if ( $nada[$res] eq "");
+#print "working on line: $nada[$res]\n";
+                 $node_str .= $nada[$res];
+            }
+
+            $job_nodes{$jobid} = $node_str;
+            if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+               $job_nodes{$jobid} =~ s/\[/\[nid/g;
+            }
+            $job_nodes{$jobid} =~ s/\]\[/ /g;
+            $job_nodes{$jobid} =~ s/\[//g;
+            $job_nodes{$jobid} =~ s/\]//g;
+            $job_nodes{$jobid} =~ s/\:[0-9]*//g;
+            $job_nodes{$jobid} =~ s/\:/ /g;
+            $job_nodes{$jobid} =~ s/\*[0-9]+/ /g;
+
+            $wait_res = "allocated nodes = $job_nodes{$jobid}";
+
+            ### ------------------------------------------------- ###
+
+            # job is accepted by moab and now waiting to launch
+            if ( $stuff =~ /Idle/ ) {
+               if ( "$state{$jobid}" eq "" ) { $state{$jobid} = 0; }
+               if ( $state{$jobid} == 0 ) {
+                  print SUBMITLOG "$Now --- $shortName ($mytest_Params{$tmpP}) job $sjid is elegable and waiting for resources\n";
+                  unless ( $opts{t} ) { print "$Now --- $shortName ($mytest_Params{$tmpP}) job $sjid is waiting for resources\n"; }
+                  $output = 1;
+                  $state{$jobid} = 1;
+                  if ( $opts{d} ) { $dstate{$jobid} =~ s/Idle/Running/; }
+               }
+               next;
+            }
+
+            ### ------------------------------------------------- ###
+
+
+            # job is now running
+            if ( $stuff =~ /Running/ ) {
+               if ( "$state{$jobid}" eq "" ) { $state{$jobid} = 1; }
+               if ( $state{$jobid} <= 1 ) {
+                  print SUBMITLOG "$Now --- $shortName ($mytest_Params{$tmpP}) job $sjid is RUNNING: $wait_res\n";
+                  unless ( $opts{t} ) { print "$Now --- $shortName ($mytest_Params{$tmpP}) job $sjid is RUNNING: $wait_res\n"; }
+                  $output = 1;
+                  $state{$jobid} = 2;
+                  if ( $opts{d} ) { $dstate{$jobid} =~ s/Running/Completed/; }
+               }
+               next;
+            }
+
+
+
+            ### ------------------------------------------------- ###
+
+
+            # job has been canceled for some reason
+            if ( $stuff =~ /Canceling/ ) {
+               for ( my $res=0; $res<@nada; $res++ ) {
+                  next if (! ( $nada[$res] =~ /Allocated Nodes:/ ));
+                  $wait_res = "allocated nodes = $nada[$res+1]\n$nada[$res+2]";
+                  last;
+               }
+   
+               if ( "$state{$jobid}" eq "" ) { $state{$jobid} = 3; }
+               if ((! ( $wait_res =~ /WARNING/ )) && (( $stuff =~ / 00:00:00  Duration:/ ) || ( $stuff =~ / 00:00:01  Duration:/ ))) {
+                  $wait_res =~ s/allocated/TIME LIMIT EXCEEDED - /;
+               }
+               if ( $state{$jobid} <= 3 ) {
+                  print SUBMITLOG "$Now --- $shortName ($mytest_Params{$tmpP}) job $sjid has been CANCELED by the system: \n\t$wait_res\n";
+                  unless ( $opts{t} ) { print "\n$Now --- $shortName ($mytest_Params{$tmpP}) job $sjid has been CANCELED by the system: \n\t$wait_res\n--- Attempting to locate Moab output files for job $sjid ...\n"; }
+                  $state{$jobid} = 4;
+                  if ( $opts{d} ) { $dstate{$jobid} =~ s/Running/Canceled/; }
+               }
+               $output = 1;
+               goto JOBDONE;
+            }
+
+            ### ------------------------------------------------- ###
+
+
+            # job is now finished
+            if (( $stuff =~ /Completed/ ) || ( $stuff =~ /Removed/ ) || ( $stuff =~ /cannot locate job/ ) || ( $stuff =~ /Canceling/ ) || ( "$stuff" eq "" )) {
+
+
+                         ### ------------------------ ###
+
+
+               if ( $stuff =~ /Removed/ ) {
+                  if ( $opts{d} ) {
+                     $dstate{$jobid} = "";
+                  }
+                  print SUBMITLOG "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has been REMOVED.\n";
+                  unless ( $opts{t} ) { print "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has been REMOVED.\n"; }
+		  remove_jid("$jobid","1");		# remove this job from the list
+                  $jobid = "";
+                  $output = 1;
+                  next;
+               }
+
+               if ( $stuff =~ /Complete/ ) {
+                  $state{$jobid} = 3;
+               }
+
+
+                         ### ------------------------ ###
+
+               # handle the possibility that the job has not yet run
+               next if (( $state{$jobid} <= 1 ) && (( $stuff =~ /cannot locate job/ ) || ( "$stuff" eq "" )));
+
+
+                         ### ------------------------ ###
+
+JOBDONE:
+
+               # move moab generated output files (stderr/stdout) into test log directory
+
+#print "Debug: looking for jobid - $sjid in $outputdir\n";
+                  $tmpdir = `ls -1 $outputdir | grep $sjid`; # target results dir
+                  if ( ( $tmpdir =~ /OU/ ) && ( $tmpdir =~ /ER/ ) ||
+                       ( $tmpdir =~ /\.e$sjid/ ) && ( $tmpdir =~ /\.o$sjid/ ) )
+                  {
+#print "Debug: found $tmpdir\n";
+                     @nada = split "\n",$tmpdir;
+                     foreach $x ( @nada ) {
+                        if ( ( $x =~ /OU/ ) || ( $x =~ /\.o$sjid/)) {
+                           chomp($x);
+		           $tmpdir = `grep -a "tld" $outputdir/$x`;
+                           last;
+                        }
+                     }
+                     chomp $tmpdir;
+                     $tmpdir =~ /^tld -> (.*)/;
+                     $tmpdir = $1;
+#print "tld - $tmpdir\n";
+
+                     # check for anomolous condition of null tld path
+                     if ( "$tmpdir" eq "" ) {
+                         next if ( $noTmpDir{$jobid}++ < 10 );
+                         print SUBMITLOG "$Now *** ERROR: no temporary log directory found in Moab output file for job $sjid, removing this job from jobid_list.\n";
+                         unless ( $opts{t} ) { print "$Now *** ERROR: no temporary log directory found in Moab output file for job $sjid, removing this job from jobid_list.\n"; }
+                        
+		         remove_jid("$jobid","2");		# remove this job from the list
+                         $jobid = "";
+                         $output = 1;
+                         undef $noTmpDir{$jobid};
+                         next; 
+                     }
+
+
+                         ### ------------------------ ###
+I3:
+                     $interrupt = 0;
+
+                     my $tn = $test_name{$jobid};
+#                     if ( $tn =~ /-/ ) {
+#                        my @NaDa = split '-',$test_name{$jobid};
+#                        pop @NaDa;
+#                        if ( @NaDa > 1 ) {
+#                           $tn = join '-',@NaDa;
+#                        } else {
+#                           $tn = "$NaDa[0]";
+#                        }
+#                     }
+#print "DEBUG: test name after mystery algorithm is $test_name{$jobid}\n";
+
+                     # find out where the final test results will be placed
+                     $x = `$ENV{'GZBIN'}/gz_glean -g "ATC" -p -t "$tn" -f "$tmpdir"`;
+                     if ( $x =~ /error/i ) {
+		         remove_jid("$jobid","2");		# remove this job from the list
+                         $jobid = "";
+                         $output = 1;
+                         next; 
+                     } else {
+                       $finaldir{$jobid} = $x; # final results placed in this directory
+                       chomp($finaldir{$jobid});
+                       $state{$jobid} = 5;
+                     }
+
+
+                     if ( $interrupt ) { goto I3; }
+
+
+                         ### ------------------------ ###
+
+I2:
+                     $interrupt = 0;
+                     # save output from test by moving it to the final results directory\n";
+                     if ( -e "$finaldir{$jobid}" ) {
+                        # grab all file names with my jobid
+                        my @files = `ls $outputdir | grep "$jobid" | grep -v ":"`;
+                        foreach $i (@files) {
+                          chomp $i;
+                          # what now looks like a redundant check for the jobid is necessary
+                          # for the line with the special regex variables to work
+                          if ($i =~ /$jobid/) {
+                            unless (($` =~ /$jobid/) ||  ($' =~ /$jobid/) ) {
+#print "move - $outputdir/$i to $finaldir{$jobid}\n";
+                              system("mv -f $outputdir/$i $finaldir{$jobid}\n");
+                            }
+                          }
+                        }
+                     }
+
+                     if ( $interrupt ) { goto I2; }
+                     if ( defined $moabWait{$jobid} ) { undef $moabWait{$jobid}; }
+                     goto DONENOW;
+
+                  } else {
+
+
+                         ### ------------------------ ###
+
+                     # if test output files created by moab do not yet exist, must wait and retry
+                     if (( $state{$jobid} == 2 ) || ( $state{$jobid} == 3 )) {
+
+                        # remember that this job completed, but moab files weren't there
+                        if ( defined $moabWait{$jobid} ) {
+                           if ( $opts{v} ) { print SUBMITLOG "$Now --- Moab output files for job $sjid not found, trying again ($moabWait{$jobid}).\n"; }
+                           next if ( scalar($moabWait{$jobid}--) > 0 );
+
+                           # we've tried several times to get moab output files, time to give up
+                           undef $moabWait{$jobid};
+                           # now go clean up the job as if it had completed normally
+                           print SUBMITLOG "--- Unable to locate Moab output files, giving up on job $sjid.\n";
+                           if (! $opts{t} ) { print "--- Unable to locate Moab output files, giving up on job $sjid.\n"; }
+                           $output = 1;
+
+                           # see if by chance the glean directory exists, and if so,
+                           # perchance a log file, then we can finish up properly
+                           my $xdate = `date "+%Y-%m-%d"`;
+                           chomp($xdate);
+                           my ($yr,$mo,$dy) = split '-',$xdate; 
+                           $finaldir{$jobid} = "$outputdir/gzshared/$yr/${yr}-$mo/$xdate";
+                           # try to find this jobid in this test's directory on 
+                           # this machine on this date
+                           $tn = $test_name{$jobid};
+                           if ( $tn =~ /-/ ) {
+                              my @NaDa = split '-',$test_name{$jobid};
+                              pop @NaDa;
+                              if ( @NaDa > 1 ) {
+                                 $tn = join '-',@NaDa;
+                              } else {
+                                 $tn = "$NaDa[0]";
+                              }
+                           }
+                           my $q = `ls -m $finaldir{$jobid}`;
+                           $q =~ s/\s//g;
+                           @nada = split ',',$q;
+                           foreach $q ( @nada ) {	# segments
+                              next if ( "$q" eq "" );
+                              my $d = `ls -m $finaldir{$jobid}/$q/$tn`;
+                              $d =~ s/\s//g;
+                              @nada = split ',',$d;
+                              foreach $d ( @nada ) {	# test directories
+                                 next if ( "$d" eq "" );
+                                 if ( $d =~ /$jobid/ ) { # bingo: found glean directory
+                                    $finaldir{$jobid} .= "/$q/$tn/$d";
+                                    $tmpdir = " ";
+                                    goto DONENOW;  # treat this like completed job
+                                 }
+                              }
+                           }
+
+		           remove_jid("$jobid","4");    # remove this job from the list
+                           $jobid = "";
+                           next;
+
+                        } else {
+
+
+                         ### ------------------------ ###
+
+#                           print SUBMITLOG "-#_#_#_#- FINISHED condition for jobid $jobid: stuff=$stuff\n";
+                           print SUBMITLOG "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has FINISHED execution, looking for output files.\n";
+                           unless ( $opts{t} ) { print "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has FINISHED execution, looking for output files.\n"; }
+
+                           # we will try n times to get these files
+                           $moabWait{$jobid} = 30;
+			   # don't do cleanup items at this time
+                           next;
+                        }
+
+                     } else {
+
+
+                         ### ------------------------ ###
+
+                        # checkjob has returned nada for this jid, we're done waiting 
+                        if ( "$stuff" eq "" ) {
+	                      remove_jid("$jobid","5");		# remove this job from the list
+                              undef $chkjobWait{$jobid};
+                              $output = 1;
+                              next;
+                        }
+
+                        next;	# just try again if we're in the wrong internal state
+
+                         ### ------------------------ ###
+
+                        ## won't get here when above next is in place ##
+                        # if we haven't even begun, something's wrong
+                        if (( "$state{$jobid}" eq "" ) || ( $state{$jobid} == 0 )) {
+                        
+                           unless ( $opts{t} ) { print "$Now --- Confusing status for $tn ($mytest_Params{$tmpP}) job $sjid. It appears the job did not run.\n"; }
+                           print SUBMITLOG "$Now --- Confusing status for $tn ($mytest_Params{$tmpP}) job $sjid. It appears the job did not run.\n";
+	                   remove_jid("$jobid","6");	# remove this job from the list
+                           undef $chkjobWait{$jobid};
+                           $output = 1;
+         
+                           # now go clean up the job as if it had completed normally
+                        }
+
+                        next;
+                     }
+                  }
+               if ( "$state{$jobid}" eq "" ) { $state{$jobid} = 2; }
+
+               		### ------------------------------ ###
+
+#               if ((( $stuff =~ /cannot locate job/ )  || ( "$stuff" eq "" )) && ( $state{$jobid} == 2 )) {
+#                  print SUBMITLOG "$Now --- Job $jobid could not be located, assumed removed.\n";
+#		  remove_jid("$jobid","x");		# remove this job from the list
+#                  $jobid = "";
+#                  next;
+#               }
+
+               		### ------------------------------ ###
+
+               if ( $stuff =~ /Removed/ ) {
+		  remove_jid("$jobid","7");		# remove this job from the list
+                  $jobid = "";
+                  print SUBMITLOG "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has been removed.\n";
+                  unless ( $opts{t} ) { print "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has been removed.\n"; }
+                  $output = 1;
+                  next;
+               }
+
+               		### ------------------------------ ###
+
+
+               $doneyet = `ls -m $tmpdir`;
+               if (( $stuff =~ /Completed/ ) ||
+                  (( $doneyet =~ /OU/ ) && ( $doneyet =~ /ER/ )) ||
+                  (( $finaldir{$jobid} =~ /OU/ ) && ( $finaldir{$jobid} =~ /ER/ ))) { 	# job is done
+
+DONENOW:
+
+                     print SUBMITLOG "$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has COMPLETED.\n";
+                     unless ( $opts{t} ) { print "\n$Now --- $tn ($mytest_Params{$tmpP}) job $sjid has COMPLETED.\n"; }
+
+                     ($nametmp,$x) = split '\.',$test; # get test name, ignore ".size" part of $test
+                     $logFile = "$finaldir{$jobid}/$test_name{$jobid}__$exec_file{$jobid}.log";
+                     if ( $job_nodes{$jobid} =~ /\*/ ) {
+                        $job_nodes{$jobid} = getNodesUsed("$logFile");	# get actual nodes used
+                     }
+                     $output = 1;
+      
+                     if ( $opts{v} ) { print SUBMITLOG "--- jobid = $jobid, logFile = $logFile, nodes used = $job_nodes{$jobid}.\n"; }
+
+                     $x = 0;
+                     if ( ! -e "$logFile" ) {
+                        $x = 1;
+                     } else {
+                        my $cmd = "$ENV{'GZBIN'}/util/chklg $logFile";	# get PASSED or FAILED
+I4:
+                        $interrupt = 0;
+                        my $z = `$cmd`;
+                        if ( $interrupt ) { goto I4; }
+   
+                        $zstat = "$z";
+                        if ( $z =~ /INCOMPLETE/ ) { 
+                           $x = 1;
+                        } else {
+                           $output = 1;
+                           print SUBMITLOG "$z\n";
+                           print "$z\n";
+                           $Nruns_passed++ if ( $z =~ /PASS/i );
+                           $Nruns_undef++ if ( $z =~ /UNDEF/ );
+                           my ($waste, $tmpP) = split (":", $test);
+                           $mytruns{$test} = 1 if ( $z =~ /PASS/i );
+#print "DebugX3: set mytruns{$test} to $mytruns{$test}\n";
+                           $totaltruns{$tmpP}++ if ( $z =~ /PASS/i );
+                           $Nruns_failed++ if ( $z =~ /FAIL/i );
+                        }
+                     }
+##                  }
+                  if ( $x != 0 ) {
+                     # test failed:  see if there is an error message we can show the user
+                    if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+                       $x = glob("$tmpdir/*.e$sjid");
+                     } else {
+                       $x = glob("$tmpdir/$sjid*.ER");
+                     }
+                     $y = "$tmpdir";
+                     if ( -f "$x" ) {
+                        $x = `cat $x`;
+                     } else {
+                        if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+                          $x = glob("$outputdir/*.e$sjid");
+                        } else {
+                          $x = glob("$outputdir/$sjid*.ER");
+                        }
+                        $y = "$outputdir";
+                        if ( -f "$x" ) {
+                           $x = `cat $x`;
+                        } else {
+                           $x = "";
+                        }
+                     }
+                     chomp($x);
+                     if ( "$x" ne "" ) {
+                        print SUBMITLOG "*** Job $sjid encountered ERRORS:\n-------------------------\n$x\n\t--- see $y/$sjid* for more information.\n-------------------------\n";
+                        unless ( $opts{t} ) { print "*** Job $sjid encountered ERRORS:\n-------------------------\n$x\n\t--- see $y/$sjid* for more information.\n-------------------------\n"; }
+                        $output = 1;
+                     } else {
+                        print SUBMITLOG "*** Job $sjid encountered ERRORS:\n\tno MOAB output files found\n-------------------------\n";
+                        unless ( $opts{t} ) { print "*** Job $sjid encountered ERRORS: look in run log for more info.\n";}
+                        $output = 1;
+                     }
+                     
+		     # now just remove it from the list
+		     remove_jid("$jobid","8");		# remove this job from the list
+                     $jobid = "";
+                     next;
+
+                  } else {
+                        print SUBMITLOG "\t--- Final results directory for job $sjid is: \n\t$finaldir{$jobid}\n";
+                        if (! $opts{t} ) { print "\t--- Final results directory for job $sjid is: \n\t$finaldir{$jobid}\n"; }
+                  }
+                  $state{$jobid} = 5;
+   
+
+               		### ------------------------------ ###
+
+                  # update tracking information
+                  my $trt = `grep total_runtime $finaldir{$jobid}/run_time`;
+                  chomp($trt);
+                  ($x,$timeval) = split ' ',$trt;
+                  if ( "$timeval" eq "" ) { $timeval = 0.0; }
+                  $timeval = $timeval / 60.0;	# convert seconds to minutes
+                  if ( $test =~ /:/) {
+                    ($waste, $ttn) = split (":",$test); 
+                    chomp $ttn;
+                  }
+
+                  $mytime_run{$ttn} = (($timeval/60.0) * ($Knpes{$ttn}/$npes_per_node));	# normalize to node-hrs
+                  $mytotal_time_run{$ttn} += $mytime_run{$ttn};
+
+                  $Nodes = $job_nodes{$jobid};
+                  if ( $Nodes =~ / / ) {
+                     @nada = split ' ',$Nodes;
+                  } else {
+                     @nada = ( "$Nodes" );
+                  }
+                  foreach $tmpcu ( @cus ) {
+                     $index = "$tmpcu" .":$ttn";
+                     foreach $i ( @nada ) {
+                         $i =~ /$node_name_form/;     # $1=seg name, $2=node number
+                         my $n = $2;
+                         next if ( "$n" eq "" );
+                         if ( $zstat =~ /PASS/i ) {
+                           $mytests_run{$index}[$n] = $timeval;
+                           $mycumtests_run{$index}[$n] += $timeval;
+                         }
+                         $mytarget_run_mins{$index}[$n] = "";	# this node no longer reserved
+                     }
+                  }
+                  save_tracking($test);
+   
+		  remove_jid("$jobid","9");	# remove this job from the list
+                  $jobid = "";
+               }
+               next;
+            }
+         }
+       }
+
+       # now see if we are done
+       $k = 1;
+       foreach $index ( keys %jobid_list ) {
+         $i = "$jobid_list{$index}";
+         $i =~ s/\s//g;
+         $i =~ s/,//g;
+         if ( "$i" ne "" ) { $k = 0; }
+       }
+       if ( $k ) { 
+          $i = $total_jobs_submitted - ( $Nruns_passed + $Nruns_failed );
+          print "\n--------------------------------------------------\n";
+          print "\nJob submission summary:\n";
+          print "   $total_jobs_submitted job(s) submitted, $Nruns_passed jobs passed, $Nruns_failed jobs failed, $i job(s) undefined.\n\n";
+          print SUBMITLOG "\n--------------------------------------------------\n";
+          print SUBMITLOG "Job submission summary:\n";
+          print SUBMITLOG "   $total_jobs_submitted job(s) submitted, $Nruns_passed jobs passed, $Nruns_failed jobs failed, $i job(s) undefined.\n\n";
+
+          progress_summary();
+          print SUBMITLOG "Normal termination.\n";
+          print "Normal termination.\n";
+          system("rm -f $lock_file\n");
+#          system("rm -f $tracking_file\n");	#**# removing tracking file upon normal exit
+          exit;
+       } else {
+          if ( $output ) { 
+             unless ( $opts{t} ) { 
+                $i = list_jobids("summary");
+                print "$i";
+             }
+             $output = 0;
+          }
+       }
+
+       $i = int($loopWait / 2);
+       if ( $i < 1 ) { $i = 1; }
+       while ($i > 0) {
+         unless ( $opts{s} ) { 
+            spin_progress();
+         }
+         sleep 1;
+         $i--;
+       }
+       if ( -e "$kill_file" ) { killall();suicide(); }
+       if ( -e "$jid_list_file" ) { $i = list_jobids(); print "$i\n"; }
+       if ( -e "$summary_file" ) { progress_summary(); }
+       if ( -e "$verbose_off" ) { $opts{v} = 0; system("rm -f $verbose_off\n"); }
+       if ( -e "$verbose_on" ) { $opts{v} = 1; system("rm -f $verbose_on\n"); }
+   } 
+}
+
+# routine to remove this job from the jid list
+sub remove_jid {
+   my ($where,$jid,$jidindex);
+   $jid = "$_[0]";
+   $where = "$_[1]";
+   foreach $jidindex ( keys %jobid_list ) {
+      next if ( $jobid_list{$jidindex} !~ /$jid/ );
+      $jobid_list{$jidindex} =~ s/$jid//;	# remove this jid from the list
+      $jobid_list{$jidindex} =~ s/,,/,/g;
+      $jobid_list{$jidindex} =~ s/^,//;
+      $jobid_list{$jidindex} =~ s/,$//;
+      undef $state{$jid};
+      if ( $opts{v} ) { print SUBMITLOG "*** Job $jid removed from jobid_list. (Called from $where)\n"; }
+   }
+}
+
+
+## -------------------------------------------------------------------- ##
+
+sub progress_summary {
+   my ($k,$i,$Now,$m,$tmp,$tmpp);
+   my ($tn,$tp,$tl);
+   # 1st parameter non-null means don't include title, return string instead of printing
+   # 2nd parameter non-null means don't read tracking file and don't print to log file
+
+   read_tracking() if (! (( exists $_[1] ) && ( "$_[1]" ne "" )));
+   $Now = `date "+%m-%d_%H:%M"`;
+   chomp($Now);
+   $tmp = "";
+
+   @tl = @this_test_list; 
+   # pair down the tl list to unique tests for reporting purposes
+   my %seen = ();
+   @tl = grep { ! $seen{ $_ }++ } @tl;
+
+   $total_time_needed = 0;
+   foreach $test ( @tl ) {
+      $total_time_needed += $mytotal_time_run{$test};
+   }
+
+   foreach $test ( @tl ) {
+      if ( $test =~ /:/ ) {
+        ($waste, $test) = split (":", $test);
+        chomp $test;
+      }
+      # remove testParam hash part of name for reporting
+      if ( $test =~ /_Tp/ ) {
+         ($tn,$tp) = split '_Tp',$test;
+      } else {
+         $tn = $test;
+      }
+
+      $k = $node_digits;
+      if ( $k =~ /,/ ) {
+         @nada = split ',',$k;
+         $k = "0" . "$nada[$#nada]" . "d";
+      } else {
+         $k = "0" . "$k" . "d";
+      }
+
+      @nada = @cus;
+      foreach $tmpcu ( @nada ) {
+         $index = "$tmpcu".":$test";
+
+#print "my total time run - $total_time_run{$index}\n";
+
+         $tmp .= "\n\n$tn ($mytest_Params{$test}): successful runs = $totaltruns{$test}";
+
+        unless ($opts{t}) {
+          $tmp .= "\n\n\tNode coverage in minutes (this run of atc_run only) for $cunumber_to_mxnames{$tmpcu}:\n\t";
+          $m = 1;
+
+          my ($num_comp_nodes, $first_node_num);
+          # get info of this particular part of the segment 
+          $n = @cluster_segs;
+          for ( $i=0; $i<$n; $i++ ) {
+             if ( "$cluster_segs[$i]" eq "$cunumber_to_mxnames{$tmpcu}" ) {
+                @seg_config = split ',', $gazebo_conf{"Cluster_Segment_$cluster_segs[$i]"};
+                $num_comp_nodes = $seg_config[1];
+                $first_node_num = $seg_config[5]; 
+                last;
+             }
+          }
+
+          # print time usage for this part of segment 
+          $tmp .= sprintf("%$k: ", $first_node_num);
+          for ( $i=$first_node_num; $i<($num_comp_nodes+$first_node_num); $i++,$m++ ) {
+             $tmp .= sprintf("%6.3f ", $mycumtests_run{$index}[$i]);
+             if ( ($i > 0) && ($m%10 == 0) ) { 
+               $tmp .= "\n\t";
+               $tmp .= sprintf("%$k: ",$i+1);
+             }
+          }
+        } 
+      }
+   }
+   $tmpp = list_jobids("summary");
+   if ( "$tmpp" ne "" ) { 
+       $tmp .= "\n$tmpp";
+   } else {
+       $tmp .= "\n\nNo jobs still being monitored.\n";
+   }
+
+   $tmp .= "\n---------------------------------------------------\n";
+   print SUBMITLOG "$tmp\n" if (! (( exists $_[1] ) && ( "$_[1]" ne "" )));
+   if ( "$_[0]" eq "" ) {
+#      unless ( $opts{t} ) {
+         print "$tmp\n";
+#      }
+   } else {
+      return("$tmp\n");
+   }
+   if ( -e "$summary_file" ) { system("rm -f $summary_file\n"); }
+   return;
+}
+
+### ----------------------------------------------------------------- ###
+
+# job id list report
+sub list_jobids {
+   my (
+	@nada,$test_name,$Now,$title,$tmpcu,$tmp,$jid,@jids,$m,$n,
+	$summary,$i,$j,$tmpjid,$stuff,$ok,$line,$tmpline
+      );
+
+   # if parameter is present, just do summary line, not full report
+   $summary = 0;
+   if (( defined $_[0] ) && ( "$_[0]" ne "" )) {
+      $summary = 1;
+   }
+
+   $Now = `date "+%m-%d_%H:%M"`;
+   chomp($Now);
+   $j = "";
+   foreach $tmpcu ( @cus ) {
+      $j .= "$cunumber_to_mxnames{$tmpcu}, ";
+   }
+   chop($j);
+   chop($j);
+   $ok = 0;
+   if ( $summary ) {
+      $tmp = "";
+   } else {
+      $tmp = "\nSummary of Current Job IDs Being Monitored on Machine(s) $j\n";
+      $tmp .= "\t$Now\n";
+      $tmp .= "=========================================================\n";
+   }
+   if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-slurm" ) {
+      $stuff = `$ENV{'GZBIN'}/gzjobs 2> /dev/null`;
+      chomp($stuff);
+      if ( "$stuff" eq "" ) { 
+         my $me = `whoami`;
+         chomp($me);
+         $tmp = `showq | grep $me`;
+         return ("$tmp");
+      }
+   } else {
+      $stuff = `$ENV{'GZBIN'}/qjobs 2> /dev/null`;
+      chomp($stuff);
+      if ( "$stuff" eq "" ) {
+         $tmp = "\n*** Unable to determine status of jobs at this time.\n";
+         return ("$tmp");
+      }
+   }
+   @nada = split "\n",$stuff;
+   $title = "$nada[0]";
+   $tmp .= "\t$title\n";
+   foreach $test_name ( keys (%LOCALjobid_list)) {
+#print "debug: checking test $test_name\n";
+      foreach $tmpcu ( @cus ) {
+         $index = "$test_name";
+#         $index = "$tmpcu".":$test_name";
+#print "test pt 1d: my index is - $index\n";
+#print "debug: LOCALjobid_list{$index}: $LOCALjobid_list{$index}\n";
+         next if ( "$LOCALjobid_list{$index}" eq "" );
+         ($m,$n) = split '_',$test_name;
+         $tmp .= "$cunumber_to_mxnames{$tmpcu} $m ($mytest_Params{$test_name}):\n";
+         if ( $LOCALjobid_list{$index} =~ / / ) {
+            @jids = split ' ',$LOCALjobid_list{$index}; 
+         } else {
+            @jids = ( "$LOCALjobid_list{$index}" ); 
+         }
+#print "debug: checking job ids: @jids\n";
+         foreach $jid ( @jids ) {
+            next if ( "$jid" eq "" );
+            $tmpline = "";
+            foreach $line ( @nada ) {
+              if ( $line =~ /$jid/ ) {
+                 $tmpline = "$line";
+                 last;
+              }
+            }
+            chomp($tmpline);
+            if ( "$tmpline" ne "" ) {
+               $ok = 1;
+               $tmp .= "\t$tmpline\n";
+
+            } else {
+               
+               $ok = 1;
+
+               # issue checkjob command to get current status of each jid
+               $tmpline = `checkjob $jid 2> /dev/null`;
+               ($jid,$tmpjid) = split '\.',$jid;
+
+	       if ( $tmpline =~ /Running/ ) {
+	 	  $tmp .= "\t$jid is running.\n";
+	       } elsif ( $tmpline =~ /Completed/ ) {
+                  $tmp .= "\t$jid has completed.\n";
+               } elsif ( $tmpline =~ /Idle/ ) {
+                  $tmp .= "\t$jid is waiting for resources.\n";
+               } elsif (( $tmpline =~ /Removed/ ) || ( $tmpline =~ /Cancel/ )) {
+                  $tmp .= "\t$jid has been removed.\n";
+		  remove_jid("$jid","11");		# remove this job from the list
+               }
+            }
+         }
+      }
+   }
+   if ( ! $ok ) { $tmp = ""; }
+   if ( -e "$jid_list_file" ) { system("rm -f $jid_list_file\n"); }
+   if ( $summary ) {
+      if ( "$_[0]" ne "short" ) {
+         $tmp = "\n";
+      } else {
+         $tmp .= "\n";
+      }
+     my $ndone = $Nruns_passed + $Nruns_failed + $Nruns_undef; 
+     my $mon = $Nruns_submitted - $ndone; 
+
+      if ( $ndone ) {
+         $tmp .= "--- $ndone jobs have completed ---\n";
+      }
+      if ( $mon ) {
+         $tmp .= "--- Waiting on $mon job(s) ---\n";
+      }
+      $tmp .= "\n";
+     if (length($tmp) < 3 ) { $tmp = ""; }
+   } 
+   return ("$tmp");
+}
+
+sub check_nosched_jobs {
+   my ($jobid,$tmp,$stuff);
+
+   # for systems with no job scheduler, if jid still exists, assume running
+   $jobid = "$_[0]";
+   $tmp = `ps -ef | grep "$jobid" | grep -v "ps" | grep -v "grep" | grep -v "tee"`;
+   chomp($tmp);
+print SUBMITLOG "-=-=- check_nosched_jobs: jobid=$jobid, ps returned: |$tmp|\n";
+
+   if (( "$tmp" ne "" ) && ( $tmp !~ /defunct/ )) {	# still running
+      $stuff = "Running\n";
+   } else {		# must have finished
+      if (( "$state{$jobid}" eq "" ) || ( $state{$jobid} == 0 )) {
+         $stuff = "Idle\n";
+      } else {
+         $stuff = "Completed\n";
+      }
+   }
+   $tmp = `$ENV{'GZBIN'}/good_nodes`;
+   chomp($tmp);
+   $tmp =~ s/\n/][/g;
+   $stuff .= "Allocated Nodes:\n[$tmp]\n";
+   return("$stuff");
+}
+
+
+# routines to read / write the tracking information file
+sub read_tracking {
+   my (
+	$tmpcu,$index,$i,$test_name,%TMPstate
+      );
+
+   set_lock();
+   # simulate "require $tracking_file" here (since lock doesn't work with require)
+   $read_tf = "";
+#print "DEBUG: read_tracking: read the tracking file\n";
+   while (<TF>) {
+      $read_tf .= "$_";
+#print "DEBUG: $_";
+   }
+   eval $read_tf;
+
+   free_lock() if (! exists $_[0] );
+
+   if ( $opts{v} ) { 
+      print SUBMITLOG "Read in tracking file for cu $cu:\n"; 
+      print SUBMITLOG "\t(master_test_list now = @master_test_list)\n";
+   }
+}
+
+sub save_tracking {
+   # first parameter is name of test that is being merged
+   # second parameter, if non-null means don't set the lock (already locked in calling routine)
+
+   my(
+	$jids,$tmpcu,$mst,$tmp,$tmp2,$tmp4,$test_name,$i,@nada,
+	$read_tf,$lock_exists
+     );
+
+   $SIG{'INT'} = 'IGNORE';
+   $SIG{'QUIT'} = 'IGNORE';
+   $lock_exists = "";
+   if ( exists $_[0] ) {
+      $test_name = "$_[0]";
+   } else {
+     print "save tracking, no test_name\n";
+   }
+
+   if ( exists $_[1] ) {	# lock is already set, so don't reset it
+      $lock_exists = "$_[1]";	# if non-null, called from reserve_nodes
+   }
+
+   $tmp2 = <<EOF;
+\%tests_run = (
+EOF
+   $mst = <<EOF;
+\@master_test_list = (
+EOF
+   $tmp4 = <<EOF;
+\%truns = (
+EOF
+   $tmp6 = <<EOF;
+\%test_Params = (
+EOF
+   $tmp7 = <<EOF;
+\%target_run_mins = (
+EOF
+
+   set_lock() if ( "$lock_exists" eq "" );	# 2nd param non-null means lock already set
+
+      # get latest state from disk 
+
+      # simulate "require $tracking_file" since lock doesn't work with require
+     if ( "$lock_exists" eq "" ) {	# 2nd param non-null means file already been read
+         $read_tf = "";
+         while (<TF>) {
+            $read_tf .= "$_";
+         }
+         eval $read_tf;
+      }
+
+
+      # merge in this new test with what was on disk 
+      $test_name =~ s/\s//g;
+      next if ( "$test_name" eq "" );
+
+      # merge in test_name to master list
+      my $ml = "@master_test_list"; 
+      unless ($ml =~ /$test_name/) {
+         push(@master_test_list,"$test_name")
+      }
+
+     # merge in total number of runs of this test
+#print "DebugX2: increment truns{$test_name} by $mytruns{$test_name}\n";
+      $truns{$test_name} += $mytruns{$test_name};
+      $mytruns{$test_name} = 0;
+
+     # merge in test param value if not present
+     unless ( $mytest_Params{$ttn} eq "" ) {
+       $test_Params{$test_name} = $mytest_Params{$ttn};
+     }
+
+     # merge in total time job ran on each node, needed for tiling
+     $index = $test_name;
+     for( my $n=0; $n<@{$mytests_run{$index}}; $n++ ) {
+              if ( $mytests_run{$index}[$n] != 0 ) {
+                $tests_run{$index}[$n] += $mytests_run{$index}[$n];
+                $mytests_run{$index}[$n] = 0;
+              }
+              # if this never existed set it to 0 here
+              if ( $tests_run{$index}[$n] eq "" ) {
+                $tests_run{$index}[$n] = 0;
+              }
+     }
+     for( my $n=0; $n<@{$mytarget_run_mins{$index}}; $n++ ) {
+              if ($mytarget_run_mins{$index}[$n] == "") {
+                  $target_run_mins{$index}[$n] = 0;
+              } else {
+                  $target_run_mins{$index}[$n] = $mytarget_run_mins{$index}[$n]; 
+              }
+      }
+
+   # now save the new merged state back to disk 
+   foreach my $tn ( @master_test_list ) {
+      $index = "$tn";
+      $mst .= qq("$tn",\n); 
+      $tmp4 .= qq("$tn" => $truns{$tn},\n);
+      $tmp6 .= qq("$tn" => "$test_Params{$tn}",\n);
+      $tmp2 .= qq("$index" => [ );
+      $i = "@{$tests_run{$index}}";
+      $i =~ s/ /, /g;
+      $tmp2 .= "$i ],\n";
+      $tmp7 .= qq("$index" => [ );
+      $i = "@{$target_run_mins{$index}}";
+      $i =~ s/ /, /g;
+      $tmp7 .= "$i ],\n";
+   }
+
+   $mst  .= ");\n";
+   $tmp2 .= ");\n";
+   $tmp4 .= ");\n";
+   $tmp6 .= ");\n";
+   $tmp7 .= ");\n";
+
+   truncate (TF,0);
+   seek(TF,0,0);
+   print TF "\n";
+   print TF "$mst\n";
+   print TF "$tmp2\n"; 
+   print TF "$tmp4\n";
+   print TF "$tmp6\n";
+   print TF "$tmp7\n";
+   print TF "\n1;\n";
+
+   free_lock();
+
+##########################################
+#my $XX = `cat $tracking_file`;
+#print "-------------------- save_tracking AFTER:\n $XX\n";
+##########################################
+
+   if ( $opts{v} ) { print SUBMITLOG "--- Tracking file $tracking_file has been updated.\n"; }
+
+   $SIG{'INT'} = \&ctlc_handler;
+   $SIG{'QUIT'} = \&quit_handler;
+}
+
+### ----------------------------------------------------------------- ###
+
+sub print_internals {
+
+   my(
+	$jids,$tmpcu,$mst,$tmp,$tmp2,$tmp3,$tmp4,$tmp5,$test_name,$i,@nada,
+	$tmpp
+     );
+
+   $tmp2 = <<EOF;
+\%tests_run = (
+EOF
+   $mst = <<EOF;
+\@master_test_list = (
+EOF
+   $tmp3 = <<EOF;
+\%total_time_run = (
+EOF
+   $tmp4 = <<EOF;
+\%truns = (
+EOF
+   $tmp5 = <<EOF;
+\@cus = (
+EOF
+   $tmp6 = <<EOF;
+\%test_Params = (
+EOF
+   $tmp7 = <<EOF;
+\%target_run_mins = (
+EOF
+
+   foreach $test_name ( @mymaster_test_list ) {
+      $mst .= qq("$test_name",\n); 
+      $tmp3 .= qq("$test_name" => $mytotal_time_run{$test_name},\n);
+      $tmp4 .= qq("$test_name" => $mytruns{$test_name},\n);
+      $tmp6 .= qq("$test_name" => "$test_Params{$test_name}",\n);
+
+
+      foreach $tmpcu ( @cus ) {
+         $tmp5 .= qq("$tmpcu",\n);
+         $index = "$tmpcu".":$test_name";
+#         $index = "$test_name";
+#print "test pt 1i: my index is - $index\n";
+         $tmp2 .= qq("$index" => [ );
+         $i = "@{$mytests_run{$index}}";
+         $i =~ s/ /, /g;
+         $tmp2 .= "$i ],\n";
+         $tmp7 .= qq("$index" => [ );
+         $i = "@{$target_run_mins{$index}}";
+         $i =~ s/ /, /g;
+         $tmp7 .= "$i ],\n";
+      }
+   }
+   $mst  .= ");\n";
+   $tmp2 .= ");\n";
+   $tmp3 .= ");\n";
+   $tmp4 .= ");\n";
+   $tmp5 .= ");\n";
+   $tmp6 .= ");\n";
+   $tmp7 .= ");\n";
+
+   $tmpp = "\n";
+   $tmpp .= "$mst\n";
+   $tmpp .= "$tmp5\n";
+   $tmpp .= "$tmp2\n"; 
+   $tmpp .= "$tmp3\n";
+   $tmpp .= "$tmp4\n";
+   $tmpp .= "$tmp6\n";
+   $tmpp .= "$tmp7\n";
+   $tmpp .= "\n\n";
+   return("$tmpp");
+}
+
+### ----------------------------------------------------------------- ###
+
+# routine to read in the config file and set up the tracking file as needed
+sub read_config {
+   my (@nada,$tmpcu,$kk,$test,$mtest,$i,$tmp,$configd,$test_exec_file,@testParams);
+   my @possible_tests = ();
+
+   # !!OLD FORMAT!! ************************************************************************
+   # !!!  test_name npes nominal_percent time_limit node_list executable "test_args"
+   # node_list is a comma-separated list of node numbers, or "-" to allow moab to assign nodes
+   # nominal_percent is the total percent of time this test is to consume among all tests run
+   # if npes is entered as "-" it will be assumed to be 8
+   # if nominal_percent is entered as "-" it will be assumed to be infinite
+   # if executable is entered as "-" it will be taken from the test config file
+   # !!OLD FORMAT!! ************************************************************************
+
+   # !!NEW, post-cbench integration format!!
+   # The test config file now consists of name-value pairs.  Each line in the config file
+   # represents a test.  Noted fields are optional, and field order is not important.
+   #
+   # required fields:
+   #   name (test name) :: Matches directory name of test or job. MUST NOT contain a double
+   #                       underline "__" nor a period "."
+   #   pes              :: Number of cpu's or cores needed
+   #   nodes            :: Number of nodes needed
+   #   tl (time_limit)  :: hh:mm:ss or an integer value of seconds to set the run time limit
+   #
+   # optional fields:
+   #   nl (node_list)   :: comma-delimited list of nodes. Default is let Moab select nodes.
+   #                       Otherwise, a "-" will target nodes based on least used algorithm.
+   #                       Called tiling across nodes.  This list allows user to target nodes.
+   #                       Should only work on nodes within the segment ("-u" parameter) selected.
+   #   count            :: number of times to repeat this test 
+   #   exec (test exe)  :: override CMD variable in test specific config file (gzconfig) with this
+   #                       executable to call.
+   #   pl (test param list):: quoted string set to TEST_PARAMS env variable which overrides test
+   #                       specific setting in config file (gzconfig).
+   #   margs (msub args :: arbitrary quoted string passed to msub call
+
+   $SIG{'INT'} = 'IGNORE';
+   $SIG{'QUIT'} = 'IGNORE';
+
+  # First, create a possible job list and process from that list.
+  # This allows us to support the -J option.
+   my @jobDefList = ();
+   my $line = "";
+
+   if ( $opts{J} ) {
+     push (@jobDefList, $opts{J} );
+   } else {
+     open (FILE,"$config_file") || die "*** Unable to open config file ($config_file) for reading: $!\n";
+     while ( <FILE> ) {
+        next if (/^\s*#/);
+        chomp;
+        $line = $_; 
+        next if ( "$line" eq "" );
+        push (@jobDefList, $line);
+      }
+    close(FILE);
+    }
+ 
+    foreach my $jdl ( @jobDefList ) {
+#print "process -> $jdl\n"; 
+      # verify test line here. Skip and flag if bogus
+      if (test_line_ok($jdl)) {
+         # add this line to tests";
+         push (@possible_tests,$jdl);
+      } else {
+        print "Warning!, skipping invalid entry -> $jdl\n"; 
+      }
+    }
+
+#print "DEBUG: tests initialized to @tests\n";
+ 
+   # build local master test list and do some initializaion if this 
+   # test has been added to config file since tracking began
+   $kk = "@master_test_list";
+   foreach $test ( @possible_tests ) {
+      chomp($test);
+      #undef @testParams;
+      $tP = "";
+
+#print "READ_CONFIG: Begin, process $test\n";
+      # new line parser - post cbench-integration to handle new test_config format
+      test_config_breakout($test);
+
+      my $where_run = "$test_home/test_exec/$test_name";     # base directory of test-specific files
+      # check for a gazebo config file in the test_exec location
+      if (! -e "$where_run/gzconfig")  {
+        print "Warning!, gzconfig file for $test_name not found, skipping this test.\n";
+        print SUBMITLOG "gzconfig file for $test_name not found, skipping this test.\n";
+        next;
+      }
+      push (@tests,$test); # now add this line to the global @tests array
+
+      # handle msub args supplied by user. Specific test args in submit config file override
+      # any args supplied with "A" option with atc_run command
+      if (  ( $margs eq "") && ( $opts{A} ne "" ) ) {
+          $margs = $opts{A};
+      }
+
+      # create unique test name for each entry using
+      # test name, num_of_nodes, num_of_procs, and test params hash
+      my $tn;
+      $tn = "${test_name}\.$nnodes" . "x" . "$npes";
+
+      if ( $test_name !~ /\./ ) { $test_name = $tn; }
+
+      my $ml = "@mymaster_test_list";
+      unless ( $ml =~ /$test_name/) {
+        push(@mymaster_test_list,"$test_name");
+      }
+
+   # test params out of submit config file have priority
+      if ( $tP ne "" ) { 
+         # create a test param hash value
+         my $tNameExt = tPsymbol($tP);
+         $test_name .= "_Tp" . $tNameExt;
+         $tn .= "_Tp" . $tNameExt;
+         $mytest_Params{$tn} = $tP;
+         #$mytest_Params{$tn} =~ s/\"//g;
+#         if ( $mytest_Params{$tn} eq "" ) {
+#            $mytest_Params{$tn} = "No parameters specified";
+#         }
+
+      } else {
+         my ($k,$i) = split '\.',$test_name;
+         my $tpstr = get_params_from_gzconfig($k);
+         if ( $tpstr  ne "" ) { 
+            $tNameExt = tPsymbol($tpstr);
+            $test_name .= "_Tp" . $tNameExt;
+            $tn .= "_Tp" . $tNameExt;
+            $mytest_Params{$tn} = qq($tpstr);
+         }
+      }
+
+      # make sure place holder test_exec_file is in place if needed
+      if ($test_exec_file eq "") {$test_exec_file = "-"};
+
+#print "READ_CONFIG: mytest_Params{$tn} ->  $mytest_Params{$tn}\n";
+
+      push(@this_test_list,"$test_name");
+
+#print "\$test_name = $test_name\n";
+#print "\$npes = $npes\n";
+#print "\$repeat_test = $repeat_test\n";
+#print "\$tl = $tl\n";
+#print "\$Nodes = $Nodes\n";
+#print "\$margs = $margs\n";
+
+      if ( $ncus > 1 ) {		# normalization of run time 
+#         $Knpes{$test_name} = (($npes / $ncus) / $total_pes);
+         $Knpes{$test_name} = ($npes / $ncus);
+      } else {
+#         $Knpes{$test_name} = ($npes / $total_pes);
+         $Knpes{$test_name} = $npes;	# number of pes for this job
+      }
+
+#print "DEBUG A: Knpes{$test_name} - $Knpes{$test_name}\n";
+
+      $time_limit{$test_name} = "$tl";
+      $msub_args{$test_name} = $margs;
+      $totaltruns{$test_name} = 0;
+      next if ( $kk =~ /$test_name/ );
+
+      if ($configd !~ /$test_name/ ) {
+          $configd .= "$test_name";
+      }
+
+      unless ( defined $total_time_run{$test_name} ) {
+
+            foreach $tmpcu ( @cus ) {
+               $index = "$tmpcu".":$test_name";
+#               $index = "$test_name";
+
+               $total_time_run{$index} = 0;
+               $mytime_run{$index} = 0;
+               $truns{$index} = 0;
+#print "DebugX1: initialize mytruns{$index} to 0\n";
+               $mytruns{$index} = 0;
+
+               # get size of this particular cu
+               $n = @cluster_segs;
+               for ( $i=0; $i<$n; $i++ ) {
+                  if ( "$seg_name" eq "$cluster_segs[$tmpcu]" ) {
+                    @seg_config = split ',',$gazebo_conf{"Cluster_Segment_$cluster_segs[$i]"};
+                    $npes_per_node = $seg_config[2];   # number of processors per node
+                    $num_avail_nodes = $seg_config[1]; # number of compute nodes
+
+                    for ($i=0; $i<=$num_avail_nodes; $i++ ) {
+                      $mytests_run{$index}[$i] = 0;
+                      $mycumtests_run{$index}[$i] = 0;
+                      $mytarget_run_mins{$index}[$i] = 0;
+                      $target_run_mins{$index}[$i] = 0;
+                    }
+                  }
+               }
+            }
+      }
+
+
+   }
+
+   #save_tracking($test_name);
+   $SIG{'INT'} = \&ctlc_handler;
+   $SIG{'QUIT'} = \&quit_handler;
+}
+
+### ----------------------------------------------------------------- ###
+
+# routine to initialize tracking tables from archive of completed test runs
+sub init_tracking_from_archive {
+   my $sn = shift;
+   my $tf = shift;
+   print "*** Initializing tracking file from archive, may take a bit...\n";
+   system("$pwd/atc_coverage -u $sn -x $tf\n");
+   print SUBMITLOG "*** Tracking file initialized\n";
+   print "*** Tracking file initialization complete\n";
+}
+
+
+# routine to extract actual nodes used based on runit log file
+# returns string of nodes(all with segment names included)
+sub getNodesUsed {
+   my ( $nodelist, $line, @lines );
+   my $nodes_symbol = "<nodes> ";
+   my $newlist = "";
+   
+   return("") if (! -e "$_[0]" );
+
+   my $seg_name = `grep "<segName>" $_[0] | awk '{ print \$2}'`;  
+   chomp $seg_name;
+
+   $line = `cat $_[0]`;
+   @lines = split "\n",$line;
+   foreach $line ( @lines ) {
+      if ( $line =~ /$nodes_symbol/ ) {
+         $line =~ s/^$nodes_symbol//;
+         $nodelist = "$line";
+         last;
+      }
+   }
+   # if nodes named with segment part then we are done 
+    my $n;
+    foreach $n ( @cus ) {
+      my $name = "$cunumber_to_mxnames{$n}";
+      chomp $name;
+      if ( $nodelist =~ /$name/) {
+        return($nodelist);
+      }
+    }
+
+   # if just node numbers exist build the names back in
+#print "DEBUG: using seg_name - ($seg_name), delim - ($node_delim)\n";
+   my @list = split(' ', $nodelist);
+   foreach my $tmp ( @list ) {
+     $newlist .= $seg_name . $node_delim . $tmp .  " ";
+   } 
+   return($newlist);
+}
+
+
+# routine to convert time into hours
+# input format is hh:mm:ss, output is a floating point number of hours
+sub hours {
+   my ($hr,$mn,$sec,$tm);
+   $tm = "$_[0]";
+   ($hr,$mn,$sec) = split ':',$tm;
+   $tm = $hr + ((($mn * 60) + $sec) / 3600);
+   return($tm);
+}
+
+# routines to die
+sub suicide {
+   if ( "$_[0]" eq "" ) { print SUBMITLOG "Terminating.\n"; }
+   system("rm -f $kill_file $lock_file\n");
+   exit; 
+}
+
+sub Bomb {
+   print "$_[0]\n";
+   print SUBMITLOG "$_[0]\n";
+   system("rm -f $kill_file $lock_file\n");
+   exit; 
+}
+
+# signal handler for control-C
+sub ctlc_handler {
+   $SIG{'INT'} = 'IGNORE';
+   $interrupt = 1;
+   $| = 1;
+   my $i = do_user_cmd();
+   print "$i\n";
+   $SIG{'INT'} = \&ctlc_handler;
+   return;
+}
+
+# signal handler for control-\ 
+sub quit_handler {
+   $SIG{'INT'} = 'IGNORE';
+   $SIG{'QUIT'} = 'IGNORE';
+   print SUBMITLOG "Termination interrupt received, terminating.\n";
+   print "Termination interrupt received, terminating.\n";
+   suicide("x");
+}
+
+# routine to kill all known submitted jobs
+sub killall {
+   my ($out,$test,$mxname,$joblist);
+
+#   $mxname = `hostname`;
+#   chomp($mxname);
+   $joblist = "";
+   foreach $test ( keys %jobid_list ) {
+     next if ( "$test" eq "" );
+     $joblist .= "$jobid_list{$test} ";
+     $joblist =~ s/,/ /g;
+#     $joblist =~ s/\.$mxname//g;
+   }
+   if ( "$joblist" ne "" ) {
+      $out = `canceljob $joblist`;
+   }
+   return("$out");
+}
+
+### ----------------------------------------------------------------- ###
+
+# function to read from terminal, do requested action as requested
+sub do_user_cmd {
+   my ($out,$in,$eol,@nada);
+
+   my $userPrompt = "\nEnter action (h=help): ";
+
+   $| = 1;
+   $eol = "$/";
+   $/ = "\n";
+
+DUCA:
+   print "$userPrompt";
+   $in = <>;
+   chomp($in);
+
+   $out = "";
+   if ( "$in" eq "s" ) {	# generate status summary
+      $out = list_jobids("short");
+
+   } elsif ( "$in" eq "c" ) {	# generate coverage report
+      $out = progress_summary("x");
+
+   } elsif ( "$in" eq "D" ) {	# print internal arrays
+      $out = print_internals();
+      $out .= list_jobids("short");
+
+   } elsif ( "$in" =~ "^l" ) {	# reset loop wait time
+      ($out,$in) = split ' ',$in;
+      if ( $in =~ /\D/ ) {
+         $out = "Invalid number entered. Enter only positive integer seconds.\n";
+      } else {
+         $loopWait = $in;
+         $out = "Status checking loop time reset to $loopWait seconds.\n";
+      }
+
+   } elsif ( "$in" eq "K" ) {	# kill all jobs
+      $out = killall();
+
+   } elsif ( $in =~ /^k / ) {	# kill one or more running jobs
+      @nada = split ' ',$in;
+      shift @nada;
+      $in = "@nada";
+      $out = `canceljob $in`;
+
+   } elsif ( "$in" eq "t" ) {	# terminate
+      Bomb("Terminating $0 per your request (jobs left running).\n");
+
+   } elsif ( "$in" eq "h" ) {	# list commands available
+      my $usage = <<EOF;
+The following real-time commands are available:
+   h = produce this help message
+   c = report of current run node coverage 
+   D = report of internal arrays
+   k jid = kill the job whose jobid is jid (jid can be a space-delimited list)
+   K = kill all jobs currently being monitored
+   l time = set status checking loop time to "time" seconds (current time is $loopWait)
+   s = summary of current job(s) status
+   t = terminate $0 (leaving jobs running)
+EOF
+      print "$usage";
+      goto DUCA;
+   } else {
+      if ( "$in" ne "" ) {	# bad input
+         $out = "*** Invalid input: $in, ignored.\n";
+      }
+   }
+
+   $/ = "$eol";
+   return("$out\n");
+}
+
+### ----------------------------------------------------------------- ###
+
+# routine to display spinning icon to show continued progress of execution
+sub spin_progress {
+   $| = 1;
+   print "  $spin[$spin_count]"."\010"."\010"."\010";
+   if ($spin_count++ > 2) { $spin_count = 0; }
+}
+
+### ----------------------------------------------------------------- ###
+
+# Routine to assign nodes for tiling. Selects the least used nodes for this test.
+# This is a lovely feature that actually works sometimes, but is somewhat of a pain
+# to make work.
+sub reserve_nodes {
+
+  my $test_name = shift;
+  my $seg_name = shift;
+  my $nnodes = shift;
+  my $thiscu;
+  my @nada;
+  my $Nodes = "";
+  my $ncn;
+  my $nsn;
+  my %tmptarget_run_mins = ();
+
+  $n = @cluster_segs;
+  for ( $i=0; $i<$n; $i++ ) {
+    if ( "$seg_name" eq "$cluster_segs[$i]" ) {
+        $thiscu = $i;
+        $index = "$thiscu".":$test_name";
+        last;
+    }
+  }
+
+   read_tracking("dontFreeTheLock");
+
+   # get size of this particular cu
+   @seg_config = split ',',$gazebo_conf{"Cluster_Segment_$seg_name"};
+   $ncn = $seg_config[1]; # number of configured compute nodes
+   $nsn = $seg_config[5]; # node start number 
+
+   for ($i=$nsn; $i<($ncn+$nsn); $i++ ) {
+      $tmptarget_run_mins{$index}[$i] = $target_run_mins{$index}[$i] + $tests_run{$index}[$i];
+      # create list of node numbers (mins_used node_number)
+      $nada[$i] = "$tmptarget_run_mins{$index}[$i] $i\n";
+   }
+#print "array before sort:\n @nada\n";
+   @{$sorted{$thiscu}} = sort {$a <=> $b} @nada;
+#print "DEBUG: array after sort:\n @{$sorted{$thiscu}}\n";
+
+         if ( $opts{v} ) { print "--- requesting $nnodes to be reserved\n"; }
+
+         # now create our list of nodes to submit to based on the
+         # list of least used nodes and currently available nodes
+            $nodes_unavail = "";
+            $n = $nsn;
+#print "I want $nnodes node(s), from $ncn configured nodes\n";
+#print "good nodes are $live_nodes\n";
+
+            for ( $i=0; $i<$nnodes; $i++ ) {
+               ($l,$j) = split '\s',$sorted{$thiscu}[$n++];
+
+	      # switch to nid names for cle env
+               if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+                  $k = $j;
+	       } else {
+                 # format node name according to specified convention
+                 my $ks = "$segname_len" . "s";
+                 my $kd = "0" . "$node_digits" . "d";
+                 if ($node_delim eq '""') {
+                   $k = sprintf("%$ks%$kd",$cluster_segs[$thiscu],$j);
+                 } else {
+                   $k = sprintf("%$ks%s%$kd",$cluster_segs[$thiscu],$node_delim,$j);
+                 }
+	       }
+
+           # in Full mode, select only non-down nodes
+                if ( $opts{F} ) {
+                   if ( $live_nodes =~ /\b([a-zA-Z]{$segname_len}$node_delim$j)\b/ ) {
+                      $Nodes .= "$1,"; 
+                   } else {
+                      if ( $nodes_unavail !~ /\b$k\b/ ) { $nodes_unavail .= "$k,"; }
+                      if ( $n <= $ncn ) { $i--; }
+                   }
+                } else {
+           # in select mode "-", select only non-down nodes and not-in-use nodes
+                   if (( $live_nodes =~ /\b([a-zA-Z]{$segname_len}$node_delim$j)\b/ ) &&
+                       ( $dead_nodes !~ /\b[a-zA-Z]{$segname_len}$node_delim$j\b/ )) { 
+                      $Nodes .= "$1,"; 
+                   } else {
+                      if ( $nodes_unavail !~ /\b$k\b/ ) { $nodes_unavail .= "$k,"; }
+                      if ( $n <= $ncn ) { $i--; }
+                   }     
+                }
+            }
+         chop($Nodes);
+         if ( $opts{v} ) { print "my nodes are $Nodes\n"; }
+         chop($nodes_unavail);
+#print "unavailable nodes are $nodes_unavail\n";
+
+  if ($Nodes eq "" ) {
+      print " -- NO nodes acquired for $test_name\n";
+  } else {
+      # update submission load leveler information
+      @nada = split ',',$Nodes;
+      my $tmp1;
+      my $tmp2;
+      foreach $i ( @nada ) {
+        if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) {
+          $tmp2 = $i;
+        } else {
+          $i =~ /$node_name_form/;        # $1=seg name, $2=node number
+          $tmp1 = $1;
+          $tmp2 = $2;
+        }
+        $tmp2 =~ s/^0*//;
+
+#print "DebugA: tmp1 - $tmp1, tmp2 - $tmp2, index - $index, thiscu - $thiscu\n";
+        if (( $tmp1 =~ /$cluster_segs[$thiscu]/ ) || ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle" ) ) {
+           if ($target_run_mins{$index}[$tmp2] >= 50000) {
+              $mytarget_run_mins{$index}[$tmp2] += 1000;
+           } else {
+              $mytarget_run_mins{$index}[$tmp2] = 50000;
+           }
+        }
+      }
+      print " -- acquired node(s) $Nodes for $test_name\n";
+      save_tracking($index,"lockalreadyset");
+  }
+  return $Nodes;
+
+}
+
+### ----------------------------------------------------------------- ###
+
+# tracking file locking routines
+sub set_lock {
+
+   sysopen( TF, "$tracking_file", O_RDWR|O_CREAT, 0666 ) or
+      Bomb("*** Unable to open tracking file $tracking_file for writing: $!\n");
+   flock(TF,2);
+}
+
+sub free_lock {
+
+      close(TF);
+}
+
+### ----------------------------------------------------------------- ###
+
+# verify specific job definition input line is valid 
+sub test_line_ok {
+
+    my $in_line = shift; 
+#print "process -> $in_line\n"; 
+    # check for all four required key words 
+    unless ( ($in_line =~ /name:=/) &&  ($in_line =~ /nodes:=/) && ($in_line =~ /pes:=/) && ($in_line =~ /tl:=/) ) {
+    
+      print "Error!, test definition line must contain the key strings -> name:=, nodes:=, pes:=, and tl:=\n"; 
+      print "  Perhaps you are using the old submit_config file format. If so, use the utility
+        scf_translator to convert this file to the new format.\n"; 
+
+        return 0; 
+    } 
+
+    my $req_found = 0;
+    my $valid_pairs = 0;
+    my $ztn = $tnnodes = $tnpes = $tNodes = "";
+    @pairs = shellwords($in_line);
+    my $pairs = @pairs;
+    foreach $p (@pairs) {
+      $n = $v = "";
+      ($n,$v) = split(":=", $p);
+      if ( ($n) && ($v) ) { $valid_pairs++; }
+      chomp $n; chomp $v;
+      if ( $n eq "name"  ) { $ztn             = $v; $req_found++; next;}
+      if ( $n eq "nodes" ) { $tnnodes         = $v; $req_found++; next;}
+      if ( $n eq "pes"   ) { $tnpes           = $v; $req_found++; next;}
+      if ( $n eq "nl"    ) { $tNodes          = $v; next;}
+      if ( $n eq "tl"    ) { $req_found++; next;}
+    }
+
+    # non-null values must exist for each pairing
+    unless ( $valid_pairs == $pairs ) {
+      return 0;
+    }
+
+    # must get values for the required fields
+    unless ( $req_found == 4 ) {
+      return 0;
+    }
+
+    my $pes_avail = ( $npes_per_node * $num_avail_nodes );
+    if ( $tnpes > $pes_avail ) {
+        print "Warning!, requested more processors ($tnpes) than are available ($pes_avail)\n";
+        print SUBMITLOG "pes or nodes config error for $ztn, skipping job submission for this test.\n";
+        return 0; 
+    }
+
+    $pes_avail = ( $tnnodes * $npes_per_node );
+    if ( $tnpes > $pes_avail ) {
+        print "Warning!, requested more PE's ($tnpes) than node ($tnnodes) allocation provides.\n";
+        print SUBMITLOG "pes or nodes config error for $ztn, skipping job submission for this test.\n";
+        return 0; 
+    }
+
+
+    if ( $tnnodes > $num_avail_nodes ) {
+        print "Warning!, requested more nodes ($tnnodes) than nodes ($num_avail_nodes) available.\n";
+        print SUBMITLOG "pes or nodes config error for $ztn, skipping job submission for this test.\n";
+        return 0; 
+    }
+
+
+    # check that the specific nodes requested exist in the segment.
+    # @csegs is an array of segment names.  e.g.  flasha  flashb  flashc  flashd
+    if ( $tNodes ) {
+        if ( ( $tNodes ne "-" ) && ( $tNodes ne "*" ) )  {
+            @ztNodes = split ( ',', $tNodes );
+            # for each node, make sure it exists in at least one of the csegs
+            foreach $ztno (@ztNodes) {
+                $ztno =~ s/[0-9]//g;
+                $ztno =~ s/\.//g;
+                $czflag = 0;
+                foreach $cseg (@csegs) {
+                    if ( $ztno =~ $cseg ) {
+                        $czflag = 1;
+                    } 
+                }
+                if ( ! $czflag ) {
+                    print "Warning!, Segment $ztno not in @csegs (from Cluster_Segments line in gazebo.conf).\n";
+                    print "Skipping job submission for this test.\n";
+                    print SUBMITLOG "pes or nodes config error for $ztn, skipping job submission for this test.\n";
+                    return 0;
+                }
+            }
+        }
+    }
+
+    # if we made it this far, the line is good
+    return 1;
+} 
+
+### ----------------------------------------------------------------- ###
+
+# parse the test_config line and assign to variables
+sub test_config_breakout {
+
+   #$str = q\name:=test4 pes:=32 time_limit:=10:20:00 var:="the way"\;
+   $str = shift;
+
+#print "DEBUG: (breakout) process -> $str \n";
+  
+   #print "shellwords: $str\n";
+   @pairs = shellwords($str);
+
+   $test_name = $nnodes = $npes = $tl = $test_exec = "";
+   $Nodes = "";
+   $margs = "";
+   $tP = "";
+
+   foreach $p (@pairs) {
+      $n = $v = "";
+      ($n,$v) = split(":=", $p);
+      chomp $n; chomp $v;
+      #print "n is $n, v is $v\n";
+      if ( $n eq "name"  ) { $test_name      = $v; next;}
+      if ( $n eq "nodes" ) { $nnodes         = $v; next;}
+      if ( $n eq "pes"   ) { $npes           = $v; next;}
+      if ( $n eq "tl"    ) { 
+          if ( $v eq "-" || $v eq "" ) {
+              $tl = "00:01:00";
+          } else {
+              $tl = $v;
+          }
+          next;
+      }
+
+      if ( $n eq "nl"  )  { $Nodes          = $v; next;}
+      if ( $n eq "count" ) { $repeat_test   = $v; next;}
+      if ( $n eq "exec" ) { $test_exec      = $v; next;}
+      if ( $n eq "pl"   ) { $tP             = $v; next;}
+      if ( $n eq "margs" ) { $margs          = $v; next;}
+   }
+
+   # map to old way for compatibility
+   if ($Nodes eq "" ) {$Nodes = "*";} 
+   $priority = "-";
+#print "DEBUG: breakout, Nodes is $Nodes\n";
+
+}
+
+sub shellwords {
+    package shellwords;
+    local($_) = join('', @_) if @_;
+    local(@words,$snippet,$field);
+
+    s/^\s+//;
+    while ($_ ne '') {
+	$field = '';
+	for (;;) {
+	    if (s/^"(([^"\\]|\\[\\"])*)"//) {
+		($snippet = $1) =~ s#\\(.)#$1#g;
+	    }
+	    elsif (/^"/) {
+		die "Unmatched double quote: $_\n";
+	    }
+	    elsif (s/^'(([^'\\]|\\[\\'])*)'//) {
+		($snippet = $1) =~ s#\\(.)#$1#g;
+	    }
+	    elsif (/^'/) {
+		die "Unmatched single quote: $_\n";
+	    }
+	    elsif (s/^\\(.)//) {
+		$snippet = $1;
+	    }
+	    elsif (s/^([^\s\\'"]+)//) {
+		$snippet = $1;
+	    }
+	    else {
+		s/^\s+//;
+		last;
+	    }
+	    $field .= $snippet;
+	}
+	push(@words, $field);
+    }
+    @words;
+}
+
+sub get_params_from_gzconfig {
+
+  my $testname = shift;
+  my $tp = "";
+
+  # pick up potential test parameters out of test specific gzconfig file
+  if ( -e "$test_home/test_exec/$testname/gzconfig" ) {
+    do "$test_home/test_exec/$testname/gzconfig";
+    if ( "$test_config{'TEST_PARAMS'}" ne "" ) {
+        return $test_config{'TEST_PARAMS'};
+    } else {
+        return $tp;
+    }
+  }
+
+  # so what should I return if the gzconfig file is not present?
+  # checked for earlier, so it fails there...
+
+}
+
+sub provide_help_info {
+
+  if ( $opts{E} ) {               # list ENV vars 
+    my $info = <<EOE;
+
+Description of environment variables available at run time:
+
+   GZ_AUTHOR - Author of test to contact with specific test problems.  Optionally defined by the  user in the test specific gzconfig file.
+
+   GZBIN - Location of Gazebo binaries. Set up by the user or system admin.
+
+   GZ_CLEANUP -  Flag indicating whether to delete the temporary working directory after the test finishes. Default is TRUE.  Set to FALSE if the -p option to atc_run is used. Internal to Gazebo.
+
+   GZ_COMPILER - The compiler used to build the test. Optionally defined by the user in the test specific gzconfig file.
+
+   GZ_CMD - The name of the executable called by Gazebo to run the test. Must be defined by the user in the test specific gzconfig file.
+
+   GZ_CU - Target cluster or Segment the tests are run on.  Taken from "-u" argument at atc_run invocation. Set up by user in
+gazebo.conf file.
+
+   GZ_EPILOG - Name of epilog script that is called right before GZ_CMD. Used if defined by the user in the test specfic gzconfig file.
+
+   GZ_FASTCOPY - Flag to limit the number of temporary run time directories a particular test uses to one. Default is FALSE. See GZ_RUNHOME. Used if set to TRUE by the the user in the test specfic gzconfig file. However, the GZ_TMPLOGDIR will still be unique for each test instantiation.
+
+   GZHOME - Root location of user's Gazebo space. Set up by the user.
+
+   GZ_JOBID - The unique job ID for the specific running job. Set by Gazebo at run time.
+
+   GZ_LOGFILE - Name, including the path (see GZ_TMPLOGIDR), of the logfile for this particular test run. Set by Gazebo.
+
+   GZ_MPILIB - The MPI (Message-Passing Interface) library used to run the test. Optionally defined by the user in the test specific gzconfig file.
+
+   GZ_MV2WS - Space delimited string of files or directory names. Optionally set by the user in the test specific gzconfig file. Limits the amount of data copied to the temporay run directory at run time.  See GZ_RUNHOME.
+
+   GZ_NODES - The names of the nodes allocated to the test. Set by Gazebo at run time after the node allocation.
+
+   GZ_NPES - Number of processors allocated for each test run. Set by Gazebo after reading the pes value in test suite file.
+
+   GZ_NNODES - Number of nodes allocated for each test run. Set by Gazebo after reading the nodes value in test suite file. 
+
+   GZ_PESPERNODE - Number of available processors per node. Defined for each test segment in gazebo.conf file.
+
+   GZ_RESOURCEMGR - Resource manager being used. Must be set by the user in the gazebo.conf file.
+
+   GZ_PROLOG - Name of prolog script that is called right after GZ_CMD. Used if defined by the user in the test specfic gzconfig file.
+
+   GZ_RUNHOME - Temporary directory where current test directory is copied to at run time. This is done automatically for every test instantiation. Set by Gazebo.
+
+   GZ_SITE - Defines which site (and environment) the test submission is run under.  Must be set by the user in the gazebo.conf file.
+
+   GZ_TARGET_WD - The working directory (working_space) where every test is moved to at run time. Placed under GZ_TESTHOME by default, but can be altered if the user defines GZ_WS_ROOT or if defined in the test specific gzconfig file. The later takes precedence.
+
+   GZ_TESTHOME - The home directory of each specific test. Typically GZHOME/test_exec/<test_name>. 
+
+   GZ_TEST_PARAMS - A string of the test-specific parameters provided by the user. Set directly by the user in the test specific gzconfig file or set by Gazebo after reading the parameter list pl value provided in the test suite file. The later takes precedence.
+
+   GZ_TESTNAME - The name of the test being run. Set by Gazebo after reading the name value provided in test suite file.
+
+   GZ_TESTEXEC - The name of the executable used to run the current test. Same as GZ_CMD. Internal to Gazebo.
+
+   GZ_TMPLOGDIR - Directory where the logfile is placed during this particular test run. All other files placed here at run time will be
+saved to the final results directory. Set by Gazebo.
+
+   GZ_USER - The account name of the user submitting tests with Gazebo. Set by Gazebo.
+ 
+   GZ_VERSION - The version of the test. Default is 1.0. Set by the user in the test specific gzconfig file.
+
+   GZ_WS_ROOT - Environment variable the must be set by the user to override the default location of GZ_TARGET_WD.
+
+
+EOE
+   print "$info\n";
+  }
+
+  if ( $opts{h} ) {               # print help message
+    my $info = <<EOH;
+
+Usage: $0 -u <segment_name> [-q <queue>][-c <count>][-C <config_file>][(other switches)]
+
+   -h print this message.
+
+   -A quoted string to supply additional arguments to msub. Entries in test specific 
+      submit config file will override this input.
+   -b submit jobs in "batch mode" - do not monitor job progress.
+   -c submit each line in test suite this many times 
+   -d dry run --- do nothing, but show what would be done.
+   -i insert results into the gazebo database. Will fail unless infrastructure
+      is available. Site dependent. 
+   -m "make" or build (calls makeit script in test home directory) each test before executing it.
+   -p preserve temporary working directory after execution (default is
+      to delete this directory upon execution completion).
+   -q is the moab queue to use.  If not specified, the moab default is used.
+   -r reset the tracking tables (used for node coverage tracking).
+   -t terse mode: limit output display 
+   -u sets the target segment name (or comma-separated list of segment names) of the 
+      system(s) on which the tests should run.
+   -v turns on verbose mode - print additional info to log file and screen.
+   -x initialize the tracking tables using archive data of completed runs.
+   -C use the designated <config_file> instead of the default name for this submission.
+      If no name is given via this option, submission configuration files are 
+      named test-config-xxxx where xxxx is the segment name specified via -u above. 
+      (All config files are expected to be in $test_home/submit_configs)
+   -E list ENV variables defined by Gazebo during runtime 
+   -F run as many jobs necessary to fill the machine with this particular test.
+      Ignores any specific node selection options.
+   -L employ the Livermore SWL environment when running these tests
+   -T reinitialize the node targeting array to zero
+
+
+Notes:
+   Enter Control-C to get a prompt for commands to be entered during
+   execution and monitoring of jobs.  At the new prompt, enter h to get a command list.
+
+EOH
+   print "$info\n";
+  }
+
+
+
+}

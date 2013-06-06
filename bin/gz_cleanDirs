@@ -1,0 +1,150 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# Description:
+# simple script to cleanout the temporary working directories that are 
+# older than the given number of days.
+# These directories are normally removed, but preserved when the -p option
+# is used when running atc_run.
+
+use Getopt::Std;
+
+our %opts;
+$opts{n} = "";
+getopts("n:dth",\%opts);
+
+if( $opts{h} ) {
+    print "\nUsage: gz_cleanDirs [-n <# of days old>] [-d] [-t] [-h]\n\n";
+    print "Options:\n";
+    print "\t-n <# of days old>\n";
+    print "\t\tThe threshold age in days of working space directories that \n";
+    print "\t\twill be cleaned out. All directories >= #days old will be \n";
+    print "\t\tdeleted. # must be >= 1 to prevent user from deleting the \n";
+    print "\t\tworking spaces of currently running jobs. (# can be a float)\n";
+    print "\t-d\n";
+    print "\t\tDry run. Won't delete anything, but will output the \n";
+    print "\t\tdirectories that would have been deleted without the -d flag\n";
+    print "\t-t\n";
+    print "\t\tToday. Allows the user to delete working space directories \n";
+    print "\t\tof any age (overrides the restriction of days >= 1).\n";
+    print "\t-h\n";
+    print "\t\tPrints this help message.\n\n";
+    exit;
+}
+
+my $num_days = $opts{n};
+# Default is delete files that are at least two days old.
+$num_days = 2 if ( $num_days eq "");
+
+# Bounds checking and exception to the bounds
+if( $num_days < 1 ) {
+    die "Illegal number of days. Must be >= 1.\n"
+      unless ($opts{t} && $num_days >= 0);
+}
+
+my $test_home = $ENV{'GZHOME'};
+my $test_path = "$test_home/test_exec";
+chdir $test_path || die "Can't go to test_exec: $!\n";
+my @tests = glob "*";
+foreach $test_name (@tests) {
+    # Read config file
+    if( -e "$test_path/$test_name/gzconfig" ) {
+        do "$test_path/$test_name/gzconfig";
+    } else {
+        warn "Can't find gzconfig for $test_name. Skipping";
+        next;
+    }
+    # Set path of folder to delete
+    my $delete_path;
+    if( $test_config{'TARGET_WD'} eq "" ) {
+        $delete_path = "$test_path/$test_name/working_space";
+    } else {
+        $delete_path = $test_config{'TARGET_WD'};
+    }
+    # Error checking..
+    unless ( -e $delete_path ) {
+        warn "Can't find directory to clean in test $test_name.\n";
+        next;
+    }
+
+    # Start work on the working space
+    opendir $dh, $delete_path or die "Can't open $delete_path: $!\n";
+    # Find all files in path that would be working space files.
+    # This regex isn't thouroughly tested...not sure how to..but it matches.
+    my @scratch_files = grep(/\Q$test_name__$test_config{'CMD'}.\E[0-9]{19}/,
+      readdir $dh);
+    foreach $sf (@scratch_files) {
+        # Find modified time of file
+        my @st = stat($delete_path."/".$sf) or die "Can't stat file: $!\n";
+        
+        # Pull out modified time
+        my $mod_time = $st[9];
+        my $now = `date "+%s"`;
+        my $DATE_CALC = 24*60*60;
+        my $threshold = $now - ($num_days * $DATE_CALC);
+        if( ($mod_time - $threshold) <= 0 ) {
+            if( $opts{d} ) {
+                my $age = ($now - $mod_time) / $DATE_CALC;
+                # Could be a bit annoying...flooding stdout if there's a lot.
+                print "Would delete $delete_path/$sf";
+                printf(" (%.3f days old)\n", $age);
+            } else {
+                # Not the most portable solution...
+                system("rm -rf $delete_path/$sf\n");
+            }
+        }
+    }
+    closedir $dh;
+}

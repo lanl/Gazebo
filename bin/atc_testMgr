@@ -1,0 +1,598 @@
+#!/usr/bin/perl -w
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2012, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2012. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# Script used to continually "fill" up a compute segment with a suite of tests
+# original author: Craig Idler
+  
+use POSIX;
+use Cwd 'abs_path';
+use File::Basename;
+use Getopt::Std;
+
+# Example usage and meaning: 
+
+# "nohup atc_testMgr -u yra -C myts -D 30 -w 4 &"
+#
+# - Submit a new set of jobs defined by the myts test suite to yra checking every 30 minutes,
+#   only if less than 4 of my jobs already queued or running. 
+
+# *** Make sure GZHOME is set to where you've installed your GAZEBO tree
+unless (exists( $ENV{GZHOME})) {
+  print "ERROR: No env variable GZHOME set, exiting!\n";
+  exit;
+}
+my $GH = $ENV{GZHOME};
+unless (exists($ENV{PATH})) {
+  $ENV{PATH}="/usr/kerberos/bin:/bin:/usr/bin:/usr/X11R6/bin:$GH/bin:$GH:/opt/MOAB/bin:/opt/torque/x86_64/bin:.";
+}
+$ENV{G}="$GH";
+my $USER = $ENV{USER};
+
+my $pwd = dirname(abs_path("$0")); chomp($pwd);
+unless ( do "$pwd/get_gazebo_config") { die "get_gazebo_config failed!"; }
+
+use strict;
+our %gazebo_conf;
+our $cn;
+our @cn;
+my $cs = $gazebo_conf{'Cluster_Segments'}; chomp $cs;  # e.g. loba
+my $log = "$GH/atc_testMgr.log.$USER";
+my $dblog = "$GH/dbStatus.log.$USER";
+my $dbcfg = "$GH/.dbcfg";
+my $me = `whoami`; chop $me;
+my $count = 1;
+our $secs_to_wait;
+our $when;
+our $to;
+
+our %opt;
+$opt{f} = "";
+$opt{A} = "";
+$opt{c} = "";
+$opt{q} = "";
+$opt{p} = "";
+$opt{D} = "";
+$opt{C} = "";
+&getopts("dikhu:w:m:c:p:q:A:C:D:f", \%opt);
+
+our %testDefinitionLine = ();
+our %nodes2fill = ();
+
+if ($opt{h}) {
+  print "Usage: $0 -u <segment_name> [-D #] [-C file-name] [-w #] \n";
+  print "\tdispatch tests to a target segment where limited jobs are running or queued\n";
+  print "\t-h print this Help message\n";
+  print "\t-A quoted string to supply additional arguments to msub\n";
+  print "\t-c submit test suite this many times. Default is 1\n";
+  print "\t-C use this test suite file. Default is test_config_<segment_name> \n";
+  print "\t-d debug mode, show what would happen but do not submit any tests\n";
+  print "\t-D continuous mode, retry after Delaying this many minutes. Otherwise run once.\n";
+  print "\t-f force next test suite to run without checking what is currently running\n";
+  print "\t-i depricated, data now analyzed by Splunk\n";
+  print "\t-k if an instance of $0 is running, kill it and run this new one.\n";
+  print "\t-m send snapshot of results to e-mail,military-hour (ex. -m joe\@lanl.gov,14)\n";
+  print "\t-p attempt to fill up segment to this percentage. Overrides option 'c'\n";
+  print "\t-q specify this run queue\n";
+  print "\t-u name of segment(s) (CU) to submit tests on. comma seperated list if more than one.\n";
+  print "\t-w watermark. Don't submit new jobs if this many running or queued. Default is 2\n";
+  exit;
+}
+
+# Best to run one instance at a time.
+# So, check for a running instance of this test manager 
+# and try to kill it if the k option selected.
+  my $mypid = $$;
+  my $oldProcID = 0;
+  my $info = `ps x | egrep $0 | egrep -v "grep|vi" | egrep -v $mypid`;
+  if ($info =~ m/$0/) {
+    # get the process id of the old process
+    if ($info =~ /^\s+(\d+)\s/) { $oldProcID = $1; }
+    # clean up old one
+    if ( ($opt{k}) && ($oldProcID) ) {
+      print "NOTICE - killing running version of $0 (process id $oldProcID)\n";
+      `kill -9 $oldProcID`;
+    } else {
+      print "WARNING - instance of $0 is running, quiting!\n";
+      exit;
+    }
+  }
+
+# Make sure a target segment (cluster abbreviation)  name is supplied
+if ( $opt{u} ) {
+    $cn = $opt{u};
+    @cn = split (",", $cn);
+    print "Segment list to target: @cn\n";
+} else {
+    print "Must supply a target segment to test.  Exiting...\n";
+    exit;
+}
+
+# Flag to force test suite to be submitted regardless of
+# my existing running or queued jobs.
+# Not applicable when using "p" option. 
+my $check = 1;
+if ( $opt{f} ) {
+    $check = 0;
+}
+
+sub catch_alrm {
+    # clear the alarm 
+      alarm(0);
+      print "alarm caught, sending mail to $to\n" if $opt{d};
+    # perform the task
+      my $from = $me;
+      sendEmail( $to, $from);
+    # reset the alarm
+     $secs_to_wait = secs_till_event($when);
+     alarm($secs_to_wait);
+#     alarm(120);
+}
+$SIG{ALRM} = \&catch_alrm;
+
+
+sub is_db_setup {
+  # See if the perl driver module and .dbcfg config file are present.
+  # If not, don't bother with any database uploads.
+
+  my $mod_name = "DBD::mysql";
+  my $avail = 0;
+
+  if(eval "use $mod_name; 1") {
+      # print "$mod_name is available\n"; 
+      $avail = 1;
+  } else {
+    if ( $opt{d} ) {
+        print "$0: $mod_name is NOT available\n";    
+    } else {
+        print LOG "$0: $mod_name is NOT available\n";    
+    }
+  }
+
+  if (( -e $dbcfg ) && ( $avail )) {
+    return 1;
+  } else {
+    return 0;
+  } 
+}
+
+# mail snapshot of results if requested
+if ( $opt{m} ) {
+  ($to,$when) = split(/,/, $opt{m});
+  if (( $when > 24 || $when < 0) ) {
+    $when = 7;
+  }
+  $secs_to_wait = secs_till_event($when);
+  print "secs to wait until $when: $secs_to_wait\n" if $opt{d};
+  alarm($secs_to_wait);
+#  alarm(120);
+  print "send result updates to $to at everyday @ $when\n";
+}
+
+# delay this many seconds before launching again (continous mode)
+my $sleepTime = 0;
+my $continuous = 0;
+if ( $opt{D} ) {
+    $sleepTime = $opt{D} * 60;
+    unless ($opt{d}) { $continuous = 1; } # don't loop if in debug mode
+    print "$0: Continuous mode, attempt to re-launch jobs after Delay of $opt{D} minutes\n";
+} else {
+    print "$0: No continuous mode, will return when all jobs launched\n";
+}
+
+
+# change the water wark (number of jobs queued or running) from the default
+my $waterMark = 2;
+if ( $opt{w} ) {
+    $waterMark = $opt{w};
+}
+
+# log output each time it tries to launch
+open( LOG, ">>", $log ) or die "can't open $log: $!\n";
+# log what happened on last databaese update attempt 
+if ($opt{i}) {
+  open( DBLOG, ">>", $dblog ) or die "can't open $dblog: $!\n";
+}
+    
+
+# main loop
+do {
+  my $seg_cnt = @cn;
+  my $seg;
+  foreach $seg (@cn) {
+      my $time = `date +%c`; chop $time;
+      my $inUse = 999;
+
+
+      # get procs per node as defined in gazebo.conf file
+      my $tmp = $gazebo_conf{"Cluster_Segment_$opt{u}"};
+      if ( ! defined $tmp ) {
+         print LOG "$time, unable to find segment $opt{u} in gazebo.conf, nothing to be done\n"; 
+         if ($opt{d}) {print LOG "$time, unable to find segment $opt{u} in gazebo.conf, nothing to be done\n"; }
+         next;
+      }
+      my @parts = split ("," , $tmp); 
+      my $ppn = $parts[2];
+
+      # Check to see if jobs are queued or running
+      # Sometimes this area needs to be tweaked to work on different archs.
+      my $tmps =  "Cluster_Segment_" . $seg ;
+      my @cs0 =  split(",",  $gazebo_conf{$tmps});
+      print "  checking on $cs0[0]\n" if ($opt{d});
+      #  alternative: $inUse = `gzjobs -u $me | grep $me | wc -l`;
+      $inUse = `mdiag -j | grep $me | grep $cs0[0] | wc -l`;
+
+      # if percentage utilization is requested (opt{p}), check the system to see
+      # what usage level it is running at and determine how nodes need to be filled 
+      # to reach that level.
+      if ( $opt{p} ) {
+
+        my $currentUsageLevel = 100;
+        # get current state of maching utilization
+        my $systemUsageSate = `/usr/projects/splunk/getMachUtil -l`;
+        if ( $systemUsageSate =~ /percUtil=(\d+\.\d+)/ ) {
+           $currentUsageLevel = $1; 
+           print LOG "$time, running at $currentUsageLevel%\n";
+        }
+      
+        my $config_file = "";
+        # test suite must be defined in this mode 
+        if ( $opt{C} ne "" ) { 
+          $config_file = "$GH/submit_configs/$opt{C}";
+        } else {
+          print "Exiting!, no test suite defined\n";
+          exit;
+        }
+        if ($opt{d}) { print "  using test suite: $config_file\n"; }
+
+        my $totalProcs;
+        if ( $systemUsageSate =~ /totalProcs=(\d+)/ ) {
+           $totalProcs = $1;
+           if ($totalProcs =~ /\d+/) {
+             # calc total number of nodes that need to be filled in
+             my $targetPercentUtil = $opt{p};
+             my $totalNodes2fill = ($totalProcs *  (( $targetPercentUtil - $currentUsageLevel )/100)) / $ppn;
+             if ( $totalNodes2fill < 0 ) {
+               if ($opt{d}) {print "system running above target utilization, nothing to be done.\n"; }
+               print LOG "$time, system running above target utilization, nothing to be done.\n";
+             } else {
+               if ($opt{d}) {print "  need to fill up $totalNodes2fill nodes\n\n"; }
+               # calculate how many nodes that each test type should use
+               calc_node_fill($config_file,$totalNodes2fill);
+             }
+           } else { print LOG "$time, unable to determine total Procs available, nothing to be done\n"; }
+        } else { print LOG "$time, system state unavailable, nothing to be done\n";  }
+
+      }
+
+      # If more than waterMark (-w) jobs running or queued try again later.
+      # Used as a safety valve so that not to many will get stuffed 
+      # into the scheduler.
+      if ( ($check) && ( $inUse > ( $waterMark - 1)) ) {
+        if ( $opt{d} ) {
+	  print "debug: $seg, $time : no submission - plenty of jobs still running or queued\n";
+        }
+	print LOG "$seg, $time : no submission - plenty of jobs still running or queued\n";
+      } elsif ( $opt{p} )  {
+
+        # determine how to fill(pack) the different sizes of each test type into the
+        # available node space to be filled. 
+        my $submitList_r = bld_submitList();
+
+        foreach my $row (@{$submitList_r}) {
+
+          chomp($row);
+          my @flds = split(/,/, $row);
+          next if ($flds[0] < 1);
+
+          my $cmd = "";
+          $cmd =  "$ENV{'GZBIN'}/atc_run -u $seg -b "; 
+          $cmd =  $cmd . "-A '$opt{A}' " if ($opt{A});
+          $cmd =  $cmd . "-J '$flds[1]' ";
+          $cmd =  $cmd . "-c $flds[0] ";
+          $cmd =  $cmd . "-q $opt{q} " if ($opt{q});
+          $cmd = $cmd . ">> $log";
+
+          if ( $opt{d} ) { print "debug: would launch -> $cmd\n"; }
+          else {
+            print LOG "$time, submit: $cmd\n";
+
+            # clean up any prior moab output before starting new jobs
+            `atc_clean >& /dev/null`;
+  
+            # submit the test suite. Should look something like:
+            #`atc_run -u $seg -b -c $count -J 'job submit line' >> $log`;
+            `$cmd`;
+          }
+        }
+
+      } else {
+        
+          # Launch jobs in the normal way where atc_run just reads the whole test suite file
+          my $cmd;
+          $cmd =  "atc_run -u $seg -b ";
+          $cmd =  $cmd . "-c $opt{c} " if ($opt{c});
+          $cmd =  $cmd . "-C $opt{C} " if ($opt{C});
+          $cmd =  $cmd . "-q $opt{q} " if ($opt{q});
+          $cmd = $cmd . ">> $log";
+
+          if ( $opt{d} ) { print "debug: would launch -> $cmd\n"; }
+          else {
+            print LOG "$time, submit: $cmd\n";
+  
+            # clean up any prior moab output before starting new jobs
+            `atc_clean >& /dev/null`;
+  
+  	  # submit the test suite. Should look somethin like:
+            #`atc_run -u $seg -b -c $count -C $opt{C} >> $log`;
+            `$cmd`;
+          }
+
+      } 
+
+  # we can only sleep after all the segments have been checked
+  $seg_cnt = $seg_cnt - 1;
+    if ($seg_cnt == 0) {
+      if ($continuous) { `sleep $sleepTime`; } 
+    }
+
+    # Exit if flag file created -- allows another user using same GZHOME to end testMgr.
+    # Special file must be created manually by "other" user.
+    # This is menat to be a special undocumented feature.
+    my $exit_flag_file = "$ENV{'GZHOME'}/gz_exit_testMgr";
+    if (-e $exit_flag_file ) {
+      $continuous = 0;
+      unlink($exit_flag_file);
+      if ($?) {
+        print LOG "Warning!, atc_testMgr exiting but could not delete $exit_flag_file.\n";
+        print     "Warning!, atc_testMgr exiting but could not delete $exit_flag_file.\n";
+      } else {
+        print LOG "atc_testMgr exiting because $exit_flag_file file found. $exit_flag_file deleted.\n";
+        print     "atc_testMgr exiting because $exit_flag_file file found. $exit_flag_file deleted.\n";
+      }
+    }
+
+  }
+} while ($continuous);
+
+close (LOG);
+close (DBLOG);
+
+
+# -- support subroutines -- 
+
+# push the log data to the appropriate database as defined
+# in the .dbcfg file. Also, keep track of progress to this point so
+# that we can start where we left off.
+sub populateDB {
+
+  my @parts = ();
+  my $start = "";
+  my $res = "";
+
+  if (is_db_setup) {
+    if ( -e $dblog) {
+      my $str = `egrep -i 'last upload' $dblog | tail -1`;
+      $str =~ m/last upload completed on: (\d+-\d+-\d+)/;
+      $start =  $1;
+    }
+    if ($start) {
+      $res = `$ENV{GZBIN}/gz_uploadLogs2DB -q -s $start`;
+    } else {
+      # no start value will make upload begin 15 days ago
+      $res = `$ENV{GZBIN}/gz_uploadLogs2DB -q`;
+    }
+    $res =~  s/\n//g;
+    my $now = `date "+%Y-%m-%d %H:%M:%S"`;
+    chomp($now);
+    print DBLOG "last upload completed on: $now ($res)\n";
+  } else {
+    print LOG "database infrastructure not all available, no work done\n"
+  }
+
+}
+
+# Simple function which e-mails a result snapsnot
+sub sendEmail {
+    my ($to, $from) = @_;
+    my $sendmail = '/usr/sbin/sendmail';
+
+    my $host = `hostname`;
+    my $data = `$ENV{GZBIN}/atc_results`;
+
+    open(MAIL, "|$sendmail -oi -t");
+    print MAIL "From: $from\n";
+    print MAIL "To: $to\n";
+    print MAIL "Subject: Gazebo result snanpshot from $host\n\n";
+    print MAIL "$data\n";
+    close(MAIL);
+} 
+
+sub secs_till_event {
+  my $target_hr = shift;
+  my $deltaHR;
+  my $deltaMIN;
+  my $deltaSEC;
+
+  my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+
+#print "current time - hr: $hour, min: $min\n";
+
+  # find delta seconds between now and selected time
+   $hour = $hour + 1;
+   if ($hour > $target_hr) {
+     $deltaHR = (24 - $hour ) + $target_hr;
+   } else {
+     $deltaHR = ($target_hr - $hour );
+   }
+   $deltaMIN = (60 - $min );
+
+  $deltaSEC = (($deltaHR * 60) + $deltaMIN ) * 60;
+  return $deltaSEC;
+
+}
+
+# Calculate number of nodes each test name type should consume using
+# the pct value (weighting factor) attached to each valid test suite line. 
+# This algorithm lumps all tests of the same name together, not taking 
+# into account different sizes or test parameters lists. 
+sub calc_node_fill {
+  my $test_suite = shift;
+  my $idleNodes = shift;
+
+  my %totalPct = ();
+  my $totalPct = 0;
+  my $pct;
+  my $testName;
+  my $nodeCnt;
+
+  open (FILE,"$test_suite") || die "*** Unable to open test suite ($test_suite) for reading: $!\n";
+  while ( <FILE> ) {
+    next if (/^\s*#/);  # ignore commented lines
+    next if (/^$/);  # ignore empty lines
+    chomp;
+    my $line = $_;
+## debug line
+    print "read in  -> $line\n";
+    if ( $line =~ /name:=([^\s]+).+nodes:=(\d+)/ ) {
+      $testName = $1;
+      $nodeCnt = $2;
+      # save each test suite line in arrays saved in a hash by test name 
+      push(@{$testDefinitionLine{$1}}, $line);
+      if ( $line =~ /pct:=(\d+)/) { $pct = $1; } else { $pct = 25; }
+      if (!exists $totalPct{$testName}) { $totalPct{$testName} = 0;}
+      # just add up all the weighting factors, will normalize later
+      $totalPct{$testName} = $totalPct{$testName} + $pct;
+      $totalPct = $totalPct + $pct;
+      # print "name = $testName, nodes - $nodeCnt pct - $pct\n";
+    }
+  }
+  print " *** test suite input complete ***\n\n";
+  close(FILE);
+
+  # calculate number of nodes to fill per test name
+  my $normalizeFactor = 100 / $totalPct;
+  foreach $testName ( keys (%totalPct) ) {
+    $nodes2fill{$testName} = $idleNodes * ( ($totalPct{$testName} * $normalizeFactor) / 100 ); 
+    if ( $opt{d} ) { print "$testName should fill $nodes2fill{$testName} nodes\n"; }
+  }
+}
+
+
+# Determine number of times each job/test will get submitted/run.
+# Just pack in the biggest job sizes first and work down to smaller jobs
+# per test name.
+sub bld_submitList {
+
+  my @return_arr = ();
+  my $testName;
+  my $leftOverNodes = 0;
+
+  # create a hash of the test definition lines to sort on
+  foreach $testName (keys %testDefinitionLine) {
+    my %tmpHash = ();
+    my %HoA = ();
+    foreach (@{$testDefinitionLine{$testName}}) {
+      # if it doesn't have a node count, skip it
+      if ( /nodes:=(\d+)/ ) {
+        push @{$HoA{$1}}, $_;
+      } 
+    }
+
+    # job fitting done here 
+    my $n;
+    my $n2f = $nodes2fill{$testName};
+    $n2f = $n2f + $leftOverNodes;
+    # Add any left over unused nodes from prior test packing to this next test.
+    # This hould condense the packing... 
+    #
+    my $submit_cnt = 0;
+    # descending sort so that largest test(s) get packed in first 
+    foreach $n (sort {$b <=> $a} keys(%HoA)) {
+      my $arrSize = @{$HoA{$n}};
+      #print "elements in array $testName($n) -  $arrSize\n";
+      # calc number of tests of this size need to be sumbitted
+      while ( $n < $n2f ) {
+        $submit_cnt++;
+        $n2f = $n2f - $n;
+      }
+      if ($opt{d}) {print " fill with $submit_cnt runs of $testName size $n\n"; }
+      # spread number of runs across all tests of this size as evenly as possible 
+      my %numRunsPerTest = ();
+      while ( $submit_cnt > 0 ) {
+        foreach my $te ( @{$HoA{$n}} ) {
+            if ($submit_cnt < 1) {
+            last;
+          } else {
+            $numRunsPerTest{$te}++; 
+            $submit_cnt--;
+          }
+        }
+      }
+      foreach my $k ( keys(%numRunsPerTest) )  {
+        if ($opt{d}) { print "   fill with $numRunsPerTest{$k} runs of $k\n"; }
+        print LOG "    fill with $numRunsPerTest{$k} runs of $k\n";
+        push @return_arr,  "$numRunsPerTest{$k}, $k" ;
+      }
+    }
+    $leftOverNodes = $n2f;
+  
+  }
+
+  return \@return_arr; 
+
+}
+
+
+exit;

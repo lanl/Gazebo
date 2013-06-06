@@ -1,0 +1,953 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2010, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2010. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+#ATC produce reports of test run node coverage
+
+use Time::Local;
+require "$ENV{'GZBIN'}/gzsubs.pl";
+
+our $Debug = 0;    # on/off printing of debug output to log file
+
+my ( $qqq, $nad, $log, $now, $logcontents);
+$now = `date "+%m-%d_%H:%M"`;
+chomp($now);
+our $pwd;
+
+our ( %opts, %TestCoverage, %RunTime );
+our $run_time_symbol = "real ";
+our $node_symbol     = "running on nodes -> ";
+our $pbs_symbol      = "^<nodes>";
+our $pct;
+our $pctDone      = 0.0;
+our $missing_info = "";
+our $ct;
+our $num_avail_nodes = 0;
+our $node_start_num = 0;
+our $npes_per_node;
+our ($earliestStart, $latestEnd, $totalWallClockTime) = "";
+our $tracking_file;
+our (
+    $test, $line, @lines, $logfile, $node, $nodelist, @nodes, $i, $j, $k, $e,
+    $c, $jj, $s, $completedTests, @nada, @cluster_segs, %npes,
+    @tests, $path, $ls, @logs, $n, %TestTime, %CUTime,
+    %target_run_mins,  @cus,       %truns,       %total_time_run,
+    @master_test_list, %tests_run, %test_Params, $total_nodes
+);
+our $no_nodes_list_found = 0;
+
+# ------ get gazebo config values -------------- #
+
+use Cwd 'abs_path';
+use File::Basename;
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+unless ( do "$pwd/get_gazebo_config" ) {
+    die "get_gazebo_config failed!";
+}
+
+our $dir = qq($gazebo_conf{"Target_Results_Dir"}/gzshared);  # where the data is
+our $arch_dir = qq($gazebo_conf{"Archive_Results_Dir"}/gzshared);  # archive dir
+
+# each Cluster_Segment line = CU,number_of_nodes,cpus_per_node,gigabytes_mem_per_node
+$i = $gazebo_conf{"Cluster_Segments"};
+@cluster_segs = split ',', $i;
+
+
+# ------ got gazebo config values -------------- #
+
+our $DebugLog = "$ENV{'GZHOME'}/DebugOutput";
+our $output;
+our $csvfile;
+
+## ------------------------------------------------------- ##
+
+# compute list of cus and their respective names
+our %mxnames_to_cunumber = ();
+our %cunumber_to_mxnames = ();
+$n = @cluster_segs;
+for ( $i = 0 ; $i < $n ; $i++ ) {
+    @nada = split ',', $gazebo_conf{"Cluster_Segment_$cluster_segs[$i]"};
+    $cus[$i]                                  = $nada[0];
+    $npes{ $nada[0] }                         = $nada[2];
+    $mxnames_to_cunumber{ $cluster_segs[$i] } = $nada[0];
+    $cunumber_to_mxnames{ $nada[0] }          = $cluster_segs[$i];
+}
+
+## ------------------------------------------------------- ##
+
+use Getopt::Std;
+
+$opts{g} = "$ENV{'GZGRP'}";
+$opts{D} = "a";
+$opts{d} = "";
+$opts{t} = "";
+$opts{s} = "";
+$opts{e} = "";
+$opts{S} = "";
+$opts{E} = "";
+$opts{u} = "";
+$opts{x} = "";
+getopts( "g:D:d:t:s:S:u:e:E:x:hACv", \%opts );
+
+$me = "$0";
+if ( $opts{h} ) {
+    $i = <<EOF;
+This script generates a coverage report of execution minutes/node of passed tests.
+
+Usage:  $me -u seg_name [-g <group/team name>] [-h]|[-T] 
+	[-t <test names>] [ -d <full path of logs directory desired> ] 
+	[-s YYYY-MM-DD] [-S HH:MM:SS] [-e YYYY-MM-DD] [-E HH:MM:SS] [-N] [-x <file name>]
+
+          where:
+                -h print help message
+                -d use of an alternate directory; the default is: $dir
+                -g allows entry of a group name for data desired, if missing, 
+		   group gzshared is used (generally not used). 
+                -e Analyze logs ending on yyyy-mm-dd, default is today
+                -E Analyze logs ending at HH:MM:SS, default is 23:59:59, -e is today if not provided 
+                -s Analyze logs starting on yyyy-mm-dd, default is last 15 days ago
+                -S Analyze logs starting at HH:MM:SS, default is 00:00:00. -s is today if not provided
+                -t limit the coverage report to a specific test.
+                -A use the data archive directory: $arch_dir
+                -u name of segment to analyze
+                -v show nodes, test names, and time as they are summarized  
+                -x save collected data to this tracking file
+                -C output, create comma-separated text file
+
+EOF
+    print "$i\n";
+    exit;
+}
+
+
+if ($Debug) {
+    open( DEBOUT, ">$DebugLog" )
+      or die "Can't open $DebugLog for writing: $!\n";
+}
+
+
+if ( $opts{A} ) {    #  use archive directory
+    $dir = $arch_dir;
+}
+
+
+if ( "$opts{t}" ne "" ) {    # user has specified specific list of tests
+    if ( $opts{t} =~ /,/ ) {
+        @tests = split ',', $opts{t};
+    }
+    else {
+        @tests = ("$opts{t}");
+    }
+}
+#  print "A1: my test list is:  @tests\n";
+
+if ( "$opts{u}" eq "" ) {
+  print " * Error, no machine segment specified. Must use '-u' option with segment(s) - @cluster_segs\n\n";
+  exit;
+}
+my $seg_name = "$opts{u}";
+print "\n-- Analyzing segment $seg_name -- \n";
+our @qcus = ( "$seg_name" );
+$output   = "$ENV{'GZHOME'}/$seg_name-coverageReport.$now";
+$csvfile  = "$ENV{'GZHOME'}/$seg_name-coverageReport.$now.csv";
+
+# get size of this particular cu
+$n = @cluster_segs;
+for ( $i = 0 ; $i < $n ; $i++ ) {
+   if ( $seg_name =~ /$cluster_segs[$i]/ ) {
+      @seg_config = split ',', $gazebo_conf{"Cluster_Segment_$cluster_segs[$i]"};
+      $npes_per_node = $seg_config[2];    # number of processors per node
+      $num_avail_nodes = $seg_config[1]; # number of compute nodes
+      $node_start_num = $seg_config[5]; # first node number on this node segment 
+   }
+}
+
+# do some sanity checking here ...
+if (  $num_avail_nodes == 0 ) { 
+
+  print "ERROR: num_avail_nodes not initialized correctly!
+  Is -> $seg_name <- really defined in the gazebo.conf file?  \n";
+  exit;
+
+}
+
+
+my ( $end, $start );
+my $today = `date '+%Y-%m-%d'`;
+chomp $today;
+my $d;
+
+if (( "$opts{E}" ne "" ) || ( "$opts{e}" ne "" ))  {
+
+  if ( "$opts{e}" ne "" ) {
+    $d = `date '+%Y-%m-%d' -d "$opts{e}"`;
+  } else {
+    $d = $today;
+  }
+
+  if ( "$opts{E}" ne "" ) {
+    $end = `date '+%Y-%m-%d %H:%M:%S' -d "$d $opts{E}"`;
+  } else {
+    $end = `date '+%Y-%m-%d %H:%M:%S' -d "$d 23:59:59"`;
+  }
+}
+# catch bogus entries
+if ( $end eq "") {
+    $end = `date '+%Y-%m-%d %H:%M:%S' -d "$d 23:59:59"`;
+}
+chomp($end);
+
+if (( "$opts{S}" ne "" ) || ( "$opts{s}" ne "" ))  {
+
+  if ( "$opts{s}" ne "" ) {
+    $d = `date '+%Y-%m-%d' -d "$opts{s}"`;
+  } else {
+    $d = $today;
+  }
+
+  if ( "$opts{S}" ne "" ) {
+    $start = `date '+%Y-%m-%d %H:%M:%S' -d "$d $opts{S}"`;
+  } else {
+    $start = `date '+%Y-%m-%d %H:%M:%S' -d "$d 00:00:00"`;
+  }
+}
+
+# catch bogus entries
+if ($start eq "" ) {
+    $start = `date -I -d "15 days ago"`;
+}
+chomp($start);
+
+print "  - Coverage summary from $start through $end ...\n";
+
+if ( "$opts{g}" ne "" ) {
+    $dir =~ s/gzshared/$opts{g}/;
+}
+
+# set up to use directory specified by user if present
+#$dd = "-a";	# tell find_test_dirs to find all data
+if ( "$opts{d}" ne "" ) {
+    $dir = "$opts{d}";
+    chomp($dir);
+    $dd = "-d $dir";
+}
+
+if ( !-e "$dir" ) {
+    print "*** Unable to find data directory $dir. Aborting.\n";
+    exit;
+}
+
+if ( "$opts{g}" ne "" ) {
+    $dd .= "  -g $opts{g}";
+}
+else {
+    $dd .= "  -g gzshared";
+}
+
+if ( $opts{t} ne "" ) {
+    print "  - looking $dir for test(s) $opts{t} ...\n";
+    $dd .= "  -t $opts{t}";
+}
+else {
+    print "  - looking in $dir ...\n";
+}
+
+if (! defined($opts{x})) {
+    print " Error: filename must be included with '-x' option, aborting \n";
+    exit;
+}
+$tracking_file = "$ENV{'GZHOME'}/submit_tracking/$opts{x}";
+DebugPrint("--- tracking file is $tracking_file\n");
+
+if ( !$opts{C} ) {
+    $csvfile = "";
+}
+
+#$cmd = "$pwd/find_test_dirs -s $start -e $end $dd";
+#print "find command = $cmd\n";
+
+$ls    = `$pwd/find_test_dirs -s "$start" -e "$end" $dd`;
+@logs  = split "\n", $ls;
+$n     = @logs;
+my $logs_used_for_this_seg = 0;
+
+$s  = 0;
+$j  = 0;
+$jj = 0;
+print "  - total logs in results directory  = $n\n";
+print "  $seg_name data includes: "; 
+
+$completedTests = 0;
+my $incompleteTests = 0;
+
+A:
+foreach $path (@logs) {
+
+#print "looking at log $path\n";
+    next A if ( !-e "$path" );
+    next A if ( -l "$path" );
+    # make sure this seg is part of segment name field
+    next A unless ( $path =~ /\/$seg_name\// );
+
+    $logs_used_for_this_seg++;
+
+    #$tmp = sprintf( "%4d", $logs_used_for_this_seg);
+    #print "$tmp";    # let user know how far we are now
+
+    $log = "$path";
+    $log =~ s/.*\///;
+
+    DebugPrint("--- path=$path\n\tlog=$log\n");
+
+    if ( !-e "$path/post_complete" ) {
+       $incompleteTests++;
+       next A;
+    };
+
+
+   # collect starting and end times here to determine total wall clock time of analysis phase
+   my $thisStart = "";
+   $thisStart = `grep -m 1 "<start>" $path/*.log | gawk -F"> "  '{ print \$2 }'`;
+   chomp($thisStart);
+   if ($thisStart ne "") {
+      if ($earliestStart eq "" ) {
+           $earliestStart = $thisStart;
+      } else {
+           if ($thisStart lt $earliestStart) {
+               $earliestStart = $thisStart;
+           }
+      }
+   }
+   my $thisEnd = "";
+   $thisEnd = `grep -m 1 "<end>" $path/*.log | gawk -F"> "  '{ print \$2 }'`;
+   chomp($thisEnd);
+   if ($thisEnd eq "") {
+         print "no end found in $path/*.log\n";
+	 next A;
+   }
+   $completedTests += 1;
+   if ($latestEnd  eq "" ) {
+     $latestEnd = $thisEnd;
+   } else {
+     if ($thisEnd gt $latestEnd) {
+        $latestEnd = $thisEnd;
+     }
+   }
+
+   collect_stats( "$log", "$path", "$seg_name" );
+
+}
+
+  print "\n";
+  print "    logs with collectable data = $completedTests\n";
+  print "    log directories with missing output data = $incompleteTests\n";
+  print "    logs with a missing node list = $no_nodes_list_found\n";
+  print "  Coverage report is in $output\n";
+  if ($csvfile) { print "CSV file is $csvfile\n"; }
+
+  print " ----------------------------------------- \n";
+
+
+    # create coverage report
+    open( OUT, ">$output" );
+    print OUT " ----------------------------------------- \n";
+
+    print OUT "Number of logs analyzed for segment $seg_name = $logs_used_for_this_seg\n";
+    print OUT "Number of completed jobs = $completedTests\n";
+    print OUT "Number of directories with missing output data = $incompleteTests\n";
+    print OUT "Number of logs with a missing node list = $no_nodes_list_found\n";
+    print OUT " ----------------------------------------- \n";
+
+    coverage_report();
+    print OUT "\n$report\n";
+    print OUT " ----------------------------------------- \n";
+
+    print OUT "\nTest specific coverage in minutes -- \n";
+    my $mk;
+    my $nstr;
+    foreach $mk ( keys(%tests_run) ) {
+
+        my $m=1;
+        my $rtn = tP2str($mk, $test_Params{$mk});
+        print OUT "\n\n$rtn:\n";
+        $nstr = sprintf( " %03d: ", $node_start_num );
+        print OUT "$nstr";
+	$csv .= "\n\n$rtn:";
+        $nstr = "";
+        for ( $i = $node_start_num ; $i < ($node_start_num+$total_nodes); $i++,$m++ ) {
+            $nstr .= sprintf( "%8.3f ", $tests_run{$mk}[$i] );
+	    $csv .= sprintf( "%.3f,", $tests_run{$mk}[$i] );
+            if ( $m%10 == 0 ) {
+                $nstr .= sprintf( "\n %03d: ", $i+1 );
+            }
+            print OUT "$nstr";
+	    $nstr = "";
+        }
+
+    }
+    close(OUT);
+
+if ( "$opts{x}" ne "" ) {
+
+    # write data into tracking file
+    create_tracking_file();
+    print "--- tracking file $tracking_file reinitialized.\n";
+}
+
+if ($csvfile) {
+
+    # write comma separated output file
+    open( CSVOUT, ">$csvfile" );
+    print CSVOUT "\n$csv\n";
+    close(CSVOUT);
+}
+
+if ($Debug) {
+    close(DEBOUT);
+}
+exit;
+
+### ---------------------------------------------------------- ###
+
+sub collect_stats {
+    my $log = "$_[0]";
+    my $dir = "$_[1]";
+    my $cu  = "$_[2]";
+
+    $ls = `ls -m $dir`;
+    chomp($ls);
+
+    if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle") {
+      if ( $ls =~ /\.e[0-9]*/ ) {    # number of moab stderr files
+          $jj++;
+      }
+      if ( $ls =~ /\.o[0-9]*/ ) {    # number of moab stdout files
+          $j++;
+      }
+    } else {
+      if ( $ls =~ /\.ER/ ) {    # number of moab stderr files
+        $jj++;
+      }
+      if ( $ls =~ /\.OU/ ) {    # number of moab stdout files
+        $j++;
+      }
+    }
+
+    collect_coverage( "$log", "$dir", "$cu" );
+}
+
+sub collect_coverage {
+    my ( @nada, $z, @stuff, $tn, $npes, $i, $n, $npes_per_node,
+        @seg_config, $tmpcu, @nodes, $seg_name );
+
+    my $log = "$_[0]";
+    my $dir = "$_[1]";
+    my $cu  = "$_[2]";
+    $seg_name = $cu;
+
+    # get test name and name of executable
+    @nada = split '__', $log;
+    $test = $nada[0];
+    $z = $nada[1];    # save name of executable
+
+    $npes = `cat $dir/machine | grep -m 1 '<npes>'`;
+    chomp($npes);
+    $npes =~ s/<npes> //;
+
+   # get number of nodes that were used
+   my $tmp;
+   my @nnodes = ();
+   $tmp = `cat $dir/*.log | grep -m 1 "<nodes> " | gawk -F"> "  '{ print \$2 }'`;
+   chomp($tmp);
+   @nnodes = split(" ", $tmp);
+   $nnodes = @nnodes;
+
+
+   $tn = ${test} . "." . $nnodes . "x" . $npes;
+
+#print "collect_coverage: look at $dir\n"; 
+    my $tP = `cat $dir/*.log | grep -m 1 '<params>'`;
+    chomp($tP);
+    $tP =~ s/<params> //;
+    unless ( $tP eq "" ) {
+        my $tNameExt = tPsymbol($tP);
+        if ( "$tNameExt" ne "" ) { $tn .= "_Tp" . $tNameExt; }
+    }
+    $test_Params{$tn} = "$tP";
+
+    $tmpcu = "@master_test_list";
+    if ( $tmpcu !~ /$tn/ ) {
+        push( @master_test_list, $tn );    # test name
+    }
+
+    if ( -e "$dir/post_complete" ) {
+        $truns{$tn}++;    # number of times test ran to completion
+        $z = `cat $dir/run_time | grep 'total_runtime'`;
+        chomp($z);
+        $z =~ s/^total_runtime //;    # execution time in seconds
+        $z       = $z / 60.0;         # convert to minutes
+        $runtime = $z;                # minutes run on each node
+
+        my $str;
+        my $result = "";
+
+        $nodeStr = `grep '<nodes> ' $dir/*.log`;
+        $nodeStr =~ s/<nodes> //g;
+
+        if ( $opts{v} ) {
+          print "log: $log\n\tnodes: - $nodeStr\n";
+        }
+
+        @nodes = ();
+        @tmplist = ();
+        @tmplist = split( / /, $nodeStr );
+
+        $nodelist = @tmplist;
+        if ( $nodelist == 0 ) {
+#        print "\t No Nodes found in $dir, nodelist is $nodelist, nodes are - @nodes\n";
+            $no_nodes_list_found++;
+        }
+
+        # select nodes only for segment requested. Might seem redundant for single-cu
+        # tests, but is necessary for logs from multi-segment tests.
+
+        foreach $n ( @tmplist ) {
+# print "cwi, n - $n\n";
+          # the cray naming is abstract just put it on the list for now, cwi
+          if ( qq($gazebo_conf{"Job_Dispatcher"}) eq "moab-cle") {
+            $n =~ s/[a-zA-Z]//g;
+            push(@nodes, $n);
+          } else {
+#            if ($n =~ $seg_name) {
+              # save just the node number 
+              $n =~ s/[a-zA-Z]//g;
+              push(@nodes, $n);
+#            }
+          }
+        }
+
+        if ( $opts{v} ) {
+          print "nodes - @nodes\n";
+        }
+
+        # get number of nodes this test ran on
+        $z = @nodes;
+        $total_time_run{$tn} +=
+          ( ( $runtime / 60.0 ) * $z );    # normalize to node-hrs
+
+            $tmpcu = $cus[$k];
+            $index = "$tn";
+
+            $total_nodes = $num_avail_nodes;
+#            for ( $x = 0; $x <= $num_avail_nodes; $x++ ) {
+            for ( $x = $node_start_num; $x < ($node_start_num+$num_avail_nodes); $x++ ) {
+              $target_run_mins{$index}[$x] = 0;
+              if ( !exists $tests_run{$index}[$x] ) {
+                      $tests_run{$index}[$x] = 0;
+              }
+            }
+
+            foreach $n (@nodes) {
+              $n =~ s/^0*//;
+              chomp $n;
+
+             # add up total time this test ran on each node
+              $tests_run{$index}[$n] += $runtime;
+             # add up total overall time spent on this node
+             if ( defined $RunTime{$n} ) {
+                $RunTime{$n} += $runtime;
+              }
+              else {
+                $RunTime{$n} = $runtime;
+              }
+              if ( $opts{v} ) {
+                  print "node:$n, tn:$index, time:$runtime, accum: $tests_run{$index}[$n] \n";
+              }
+            }
+  }
+
+
+        if ( $opts{t} ne "" ) {    # user has specified specific list of tests to summarize
+            if ( $test =~ /$opts{t}/ ) {
+                # total time spent for this test on this cu
+                $z = sprintf( "%s+%s", $cu, $tn );
+                $TestTime{$z} = $total_time_run{$tn};
+            }
+        } else {
+            # total time spent for this test on this cu
+            $z = sprintf( "%s+%s", $cu, $tn );
+            $TestTime{$z} = $total_time_run{$tn};
+        }
+
+
+        # track time executed on each node for each test
+        foreach $node (@nodes) {
+            chomp $node;
+            if ( "$opts{t}" ne "" ) {    # user has specified specific list of tests to summarize
+                if ( $test =~ /$opts{t}/ )
+                { # NOTE won't work with list of tests, need to fix this sometime
+                        # specific time spent for this test on this node
+                    if ( defined $TestCoverage{$node}{$tn} ) {
+                        $TestCoverage{$node}{$tn} += $runtime;
+                    }
+                    else {
+                        $TestCoverage{$node}{$tn} = $runtime;
+                    }
+                }
+              } else {
+                # specific time spent for this test on this node
+                if ( defined $TestCoverage{$node}{$tn} ) {
+                    $TestCoverage{$node}{$tn} += $runtime;
+                }
+                else {
+                    $TestCoverage{$node}{$tn} = $runtime;
+                }
+              }
+
+        }
+    }
+
+sub coverage_report {
+    my $y = "";
+    my ( @cts, @ts, @tt, %hash, $nt, $ct, $m, @nada, $i, $n );
+
+    $report = "\nAnalyzing tests from $start thru $end ...\n";
+    $csv    = "Comma-Separated Text File\n";
+
+    @cts = sort { $a cmp $b } keys %tests_run;    # cu+test keys
+
+    @ts = ();
+    @ts = sort { $a cmp $b } @cts; # finally, sorted and unique list of test names
+    my @struns = sort (keys(%truns));
+
+    
+    if ( $opts{t} ne "" ) {    # user has specified a specific test to summarize
+        @nada = ();
+        foreach $tt (@tests) {
+            foreach $t (@ts) {
+                if ( $t =~ /$tt/ ) { push( @nada, $t ); }
+            }
+        }
+        @tests = @nada;
+        $report .= "\nThis Coverage Report Includes the Following Tests Only:\n";
+        $csv .= "\nThis Coverage Report Includes the Following Tests Only:\n";
+        foreach my $tn ( @struns ) {
+            next unless ( $tn =~ /$opts{t}/ );
+            $report .= sprintf( "  %-40s  (%d completed runs)\n", tP2str($tn, $test_Params{$tn}), $truns{$tn} );
+            $csv    .= sprintf( "%40s  (%d completed runs)\n", tP2str($tn, $test_Params{$tn}), $truns{$tn} );
+        }
+
+    }
+    else {
+        @tests = @ts;    # else report on all found tests
+        $report .= "\nThis Coverage Report Found the Following Tests:\n";
+        $csv    .= "\nThis Coverage Report Found the Following Tests:\n";
+         foreach my $tn ( @struns ) {
+            $report .= sprintf( "  %-40s  (%d completed runs)\n", tP2str($tn, $test_Params{$tn}), $truns{$tn} );
+            $csv    .= sprintf( "%40s  (%d completed runs)\n", tP2str($tn, $test_Params{$tn}), $truns{$tn} );
+         }
+    }
+
+
+    # Display per CU coverage
+    foreach $cu (@qcus) {
+
+        $report .= "\nMachine $cu test mix (% of running time used by this test):\n";
+        $csv .= "\nMachine $cu test mix (% of running time used by this test):\n";
+
+        my %TotalTestTime;
+	
+	# sort the values of the TestTime hash so they can be printed in ascending order
+	my @sTestTime = sort {$TestTime{$a} <=> $TestTime{$b}} (keys(%TestTime));
+
+        foreach $ct (@sTestTime) {    
+            next if ( $ct !~ /^$cu\+/ );
+            if ( $TestTime{$ct} > 0 ) {
+                $TotalTestTime{$cu} += $TestTime{$ct};
+            }
+        }
+
+        foreach $ct (@sTestTime) {
+            next if ( $ct !~ /^$cu\+/ );
+            if ( $TestTime{$ct} > 0 ) {
+                 $pct = $TestTime{$ct} / $TotalTestTime{$cu} * 100.0;
+            }
+            else {
+                $pct = 0.0;
+            }
+            $test = $ct;
+            $test =~ s/^$cu\+//;
+
+            $report .=
+              sprintf( "  %-40s %10.3f (test time) / %10.3f (total time) = %7.2f\%\n",
+                tP2str($test, $test_Params{$test}), $TestTime{$ct}, $TotalTestTime{$cu}, $pct );
+            $csv .=
+              sprintf( "%40s %10.3f (test time) / %10.3f (total time) = %7.2f\%\n",
+                tP2str($test, $test_Params{$test}), $TestTime{$ct}, $TotalTestTime{$cu}, $pct );
+        }
+
+        # calculate and print cu utilization
+        if ( $earliestStart ne "") {
+          my ($datepart, $tmptimepart) = split ("T", $earliestStart);
+          my ($timepart, $gmt) = split("-", $tmptimepart);
+          my ($yr, $mo, $day) = split("-", $datepart);
+          my ($hr, $min, $sec) = split(":", $timepart);
+          my $esecs = timelocal($sec, $min, $hr, $day, $mo-1, $yr-1900);
+          ($datepart, $tmptimepart) = split("T", $latestEnd);
+          ($timepart, $gmt) = split("-", $tmptimepart);
+          ($yr, $mo, $day) = split("-", $datepart);
+          ($hr, $min, $sec) = split(":", $timepart);
+          my $lsecs = timelocal($sec, $min, $hr, $day, $mo-1, $yr-1900);
+          $totalWallClockTime = ($lsecs - $esecs) / 3600;
+          my $possibleNodeHrs = $totalWallClockTime * $num_avail_nodes;
+          if ($possibleNodeHrs > 0 ) {
+            $report .= "\nMachine $cu total system utilization:";
+            $report .= sprintf( " %6.3f percent over a %7.2f hour period\n",
+                        $TotalTestTime{$cu}/$possibleNodeHrs * 100, $totalWallClockTime );
+            $report .= "  first recorded start time - $earliestStart\n";
+            $report .= "  last recorded end time - $latestEnd\n";
+          }
+      }
+    }
+
+    # now format a report of node coverage
+    $y = "";
+    if ( $opts{t} ne "" )
+    {    # user has specified specific list of tests to summarize
+        $y = " for all tests matching string '$opts{t}'";
+    }
+    foreach $cu ( sort { $a cmp $b } @qcus ) {
+
+        $report .= "\n\n\nMachine $cu node coverage in minutes$y: \n\n";
+        $report .= sprintf( " %03d: ", $node_start_num);
+        $csv .= "\n\n\nMachine $cu node coverage in minutes$y: \n\n";
+        $m        = 1;
+
+
+        # get size of this particular cu
+        our $seg_index;
+        $n = @cluster_segs;
+        $csv .= "\nNode#,";
+#        for ( $z = 0 ; $z <= $num_avail_nodes ; $z++ ) {
+        for ( $z = $node_start_num ; $z < ($node_start_num+$num_avail_nodes); $z++ ) {
+          $csv .= "$z,";
+        }
+        chop($csv);
+        $csv .= "\n";
+        $seg_index = $i;
+
+
+#        for ( $z = 0 ; $z <= $num_avail_nodes ; $z++, $m++ ) {
+        for ( $z = $node_start_num ; $z < ($node_start_num+$num_avail_nodes); $z++, $m++ ) {
+            $node = $z;
+            DebugPrint("--- node=$node\n");
+
+            if ( $opts{t} ne "" )
+            {      # user has specified specific list of tests to summarize
+                my $x = 0;
+                foreach $test (@tests) {
+                    if ( $test =~ /$opts{t}/ ) { # NOTE won't work with list of tests, need to fix this sometime
+                        $x += $TestCoverage{$node}{$test};
+                    }
+                }
+                $report .= sprintf( "% 9.3f ", $x );
+                $csv    .= sprintf( "%.3f,",   $x );
+            } else {
+
+                $report .= sprintf( "% 9.3f ", $RunTime{$node} );
+                $csv    .= sprintf( "%.3f,",   $RunTime{$node} );
+            }
+            if ( ( $z > 0 ) && ( $m%10 == 0 ) ) {
+                $report .= "\n ";
+                $report .= sprintf( "%03d: ", $z + 1 );
+            }
+        }
+        chop($csv);
+        $csv .= "\n";
+    }
+
+}
+
+sub DebugPrint {
+    if ($Debug) {
+        print DEBOUT "$_[0]\n";
+    }
+}
+
+# format node name according to specified convention in config file
+sub FormatNodeName {
+    my ( @nada, $k, $requested_node_number, $tmpcu );
+    my $node_delim  = $gazebo_conf{"Node_Name_Delimiter"};
+    my $node_digits = $gazebo_conf{"Max_Node_Digits"};
+    my $nodeNumLen  = $gazebo_conf{"Node_Num_Len"};
+    my $segname_len = $gazebo_conf{"Segment_Name_Length"};
+
+    $tmpcu                 = "$_[0]";    # segment index
+    $requested_node_number = "$_[1]";    # node number
+
+#print "DEBUG: requesting that $cluster_segs[$tmpcu] and $requested_node_number get slapped together\n";
+
+    if ( $nodeNumLen eq "var" ) {
+
+       #print "  var len nodes\n";
+       # variable length, just put togeter what we get
+       #      @nada = split ',',$node_digits;
+       #      $k = - $nada[$#nada];
+       #      $k = "";     # alternative method of doing this (no blanks at end)
+        $k = "$cluster_segs[$tmpcu]" . "$requested_node_number";
+    }
+    else {
+        $k = "0" . "$node_digits";
+        my $ks = "$segname_len" . "s";
+        my $kd = "$k" . "d";
+        $k = sprintf( "%$ks%s%$kd",
+            $cluster_segs[$tmpcu], $node_delim, $requested_node_number );
+    }
+
+    #print "  returning $k\n";
+    return ("$k");
+}
+
+### ---------------------------------------------------------- ###
+
+# write accumulated data into tracking file
+sub create_tracking_file {
+    my (
+        $nnodes, $n,         $k,    $tmpcu, $mst,
+        $tmp2,   $tmp3,      $tmp4, $tmp5,  $tmp7,
+        $tmp6,   $test_name, $i,    @nada
+    );
+
+    $tmp2 = <<EOF;
+\%tests_run = (
+EOF
+    $mst = <<EOF;
+\@master_test_list = (
+EOF
+    $tmp3 = <<EOF;
+\%total_time_run = (
+EOF
+    $tmp4 = <<EOF;
+\%truns = (
+EOF
+    $tmp5 = <<EOF;
+\@cus = (
+EOF
+    $tmp6 = <<EOF;
+\%test_Params = (
+EOF
+    $tmp7 = <<EOF;
+\%target_run_mins = (
+EOF
+
+    # now save the result as a new disk state
+    @seg_config = split ',', $gazebo_conf{"Cluster_Segment_$cluster_segs[0]"};
+    $nnodes = $seg_config[1];    # number of compute nodes
+
+    foreach $test_name ( sort { $a cmp $b } @master_test_list ) {
+        $mst  .= qq("$test_name",\n);
+        $tmp3 .= qq("$test_name" => $total_time_run{$test_name},\n);
+        $tmp4 .= qq("$test_name" => $truns{$test_name},\n);
+        $tmp6 .= qq("$test_name" => "$test_Params{$test_name}",\n);
+
+        for ( my $k = 0 ; $k < @cus ; $k++ ) {
+            $tmpcu = $cus[$k];
+
+            #         $index = "$k".":$test_name";
+            $index = "$test_name";
+            $tmp5 .= qq("$tmpcu",\n);
+            $tmp2 .= qq("$index" => [ );
+            $i = "@{$tests_run{$index}}";
+            $i =~ s/ /, /g;
+            $i =~ s/, ,/, 0,/g;
+            $i =~ s/ , / /g;
+            $i =~ s/^,//;
+            $i =~ s/,$//;
+            $tmp2 .= "$i ],\n";
+            $tmp7 .= qq("$index" => [ );
+            $i = "@{$target_run_mins{$index}}";
+            $i =~ s/ /, /g;
+            $i =~ s/, ,/, 0,/g;
+            $i =~ s/ , / /g;
+            $i =~ s/^,//;
+            $i =~ s/,$//;
+            $tmp7 .= "$i ],\n";
+        }
+    }
+    $mst  .= ");\n";
+    $tmp2 .= ");\n";
+    $tmp3 .= ");\n";
+    $tmp4 .= ");\n";
+    $tmp5 .= ");\n";
+    $tmp6 .= ");\n";
+    $tmp7 .= ");\n";
+
+    open( TF, ">$tracking_file" )
+      or die("Unable to open tracking file $tracking_file for writing: $!\n");
+    print TF "\n";
+    print TF "$mst\n";
+    print TF "$tmp2\n";
+    print TF "$tmp3\n";
+    print TF "$tmp4\n";
+
+    #   print TF "$tmp5\n";
+    print TF "$tmp6\n";
+    print TF "$tmp7\n";
+    print TF "\n1;\n";
+    close(TF);
+    system("chmod 666 $tracking_file\n");
+
+}

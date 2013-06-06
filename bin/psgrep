@@ -1,0 +1,173 @@
+#!/usr/bin/perl -w
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+$| = 1;
+(my $prog = $0) =~ s|.*/||;
+$ENV{'PATH'} = '/usr/bin:/bin';
+$ENV{'COLUMNS'} = 500;				# to get wide output in linux
+
+if ($#ARGV < 0) {
+   die "Usage:\n    $prog [grep(1) options] pattern\n";
+}
+
+$SIG{PIPE} = \&PIPE_handler;
+
+my $pgid = getpgrp(0);
+
+my $ps = ($^O =~ /bsd/i
+   ? 'ps -axwwo user,pid,pgid,state,start,time,command'
+   : 'ps -eo user,pid,pgid,state,stime,time,args'
+);
+
+my $pid;
+unless ($pid = open(PS,"$ps |")) {
+   die "$prog: unable to exec 'ps': $!\n";
+}
+
+my $header = <PS>;
+my @Ps = <PS>;
+close(PS);
+
+@Ps = grep(! /^\s*(\S+\s+){2}$pgid\s+.*$/, @Ps);	# omit $pgid PGIDs
+
+print STDOUT $header;
+
+my $status = 0;
+$pid = open(GREP, "|-");
+die "$prog: fork failed.\n" unless defined($pid);
+if ($pid) {						# parent
+   print GREP @Ps;
+   unless (close GREP) {
+      $status = $? >> 8;
+   }
+} else {						# child
+   exec 'grep', map { my_quotemeta($_) } @ARGV;
+}
+
+exit $status;						# exit status of 'grep'
+
+sub my_quotemeta {
+   my $arg = $_[0];
+
+   if ($arg =~ /^-/) {					# an option?
+      return $arg;
+   } else {
+      return quotemeta($arg);
+   }
+}
+
+sub PIPE_handler {
+   exit 2;
+}
+
+# Documentation
+
+=head1 NAME
+
+B<psgrep> - C<grep> for a pattern in C<ps> output
+
+=head1 SYNOPSIS
+
+B<psgrep> [grep(1) I<options>] B<pattern>
+
+=head1 DESCRIPTION
+
+B<psgrep> executes C<ps -eo> to capture the following attributes of each
+current process: I<user>, I<pid>, I<pgid>, I<state>, I<stime>, I<time> and
+I<args> (See ps(1) for more info).  Any processes having the same PGID as
+B<psgrep> are then removed from the output stream, followed by the
+printing of the C<ps> header to STDOUT.  B<psgrep> then pipes the output
+stream to C<grep>, argumented with the specified command line options.
+
+In essence, B<psgrep> is simply
+
+   % ps -ef | grep pattern
+
+with the exception that the output of B<psgrep> I<does not> contain any
+useless information about the commands you just entered - you'd have to
+type
+
+   % ps -ef | grep pattern | grep -v "grep pattern"
+
+to get that.  And it I<does> contain the informative C<ps> header (plus,
+it's just plain easier to run).
+
+=head1 OPTIONS
+
+See grep(1) for the list of options.
+
+=head1 EXAMPLES
+
+   % psgrep amd
+
+Print out the process information from the C<ps> stream containing the
+string 'amd'.
+
+   % psgrep -v root
+
+Print out the process information from the C<ps> stream not containing the
+string 'root'.
+
+=head1 SEE ALSO
+
+grep(1), ps(1)
+
+=head1 AUTHOR
+
+Daryl W. Grunau <dwg@lanl.gov>
+
+=cut

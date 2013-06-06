@@ -1,0 +1,64 @@
+#!/usr/bin/perl
+# program to check if calling program can write to this file system.  
+# created primarily to avoid hanging the program when the FS is not available.
+# print 1 or 0 if available or not
+
+use strict;
+
+$| = 1;
+my $prog;
+($prog = $0) =~ s/.*\///;
+
+# get directory and group/team info
+my $dir = shift;
+my $grp = shift;
+
+my $handle;
+open STDERR, "> /dev/null" or die "$prog: can't redirect stderr";
+
+if (my $pid = fork) {
+
+  waitpid($pid,0);
+
+} else {
+
+# the child
+
+  eval {
+
+    local $SIG{ALRM} = sub { die  print "0\n"} ;
+
+    alarm(5);
+    eval {
+#       sleep(200);
+        my $check = "$dir/tt";
+	my $result;
+#        print "checking $dir\n";
+        if ( -e $dir ) {
+          $result = system("touch $check");
+          if ($result == "0") {
+            print "1\n";
+            $result = system("rm $check");
+	  }
+	  else {
+            print "0\n";
+	  }
+	}
+	else {
+	  # dir doesn't even exist, so let's make it for 'em
+	  $result = system("mkdir -p -m 770 $dir");
+          if ($result == "0") {
+	     system("chgrp $grp $dir");
+	     system("chmod g+s $dir");
+             print "1\n";
+	  } else {
+            print "0\n";
+	  }
+	}
+    };
+    alarm(0);
+  };
+  alarm(0);
+
+  exit;
+}

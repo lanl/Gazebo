@@ -1,0 +1,234 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# script which uploads all the result log data
+# to the database.
+#
+# 2/2009, initial creation. C. Idler
+
+
+require "getopts.pl";
+use Getopt::Std;
+use File::Basename;
+use Sys::Hostname;
+our $host = hostname;
+
+use Cwd 'abs_path';
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+do "$pwd/get_gazebo_config";
+my $GB = $ENV{'GZBIN'};
+
+our %opt;
+$opt{t} = "";
+$opt{u} = "";
+$opt{l} = "";
+$opt{s} = "";
+$opt{e} = "";
+$opt{g} = "";
+$opt{q} = "";
+# setup arguments as switches or ones that require strings  
+&getopts( "g:t:u:l:s:e:qfhv", \%opt);
+
+
+my $tn;
+my ( $end, $start );
+our @lfs;
+our $lf;
+our $f;
+our @tf;
+
+# print usage if h option set
+if ($opt{h}) { usage(); exit; }
+
+if ( "$opt{e}" ne "" ) {
+    $end = `date -I -d "$opt{e}"`;
+    chomp($end);
+}
+else {
+    $end = `date -I`;
+    chomp($end);
+}
+
+if ( "$opt{s}" ne "" ) {
+    $start = `date -I -d "$opt{s}"`;
+    chomp($start);
+}
+else {
+    $start = `date -I -d "15 days ago $end"`;
+    chomp($start);
+}
+
+unless ( $opt{q} ) {
+  print "\t Process logs from $start to $end \n";
+}
+
+# determine where to search 
+my $cmd;
+if ($opt{l}) {
+    # specify alternate dirs to search for logs.
+    # not generally used by John Q. Public.
+    print "\t results directory -> $opt{l}\n\n" unless ($opt{q});
+    $cmd = "find $opt{l} -type d -maxdepth 1 -mindepth 1";
+}
+else {
+    # just use where the config file says the data is located 
+    print "\t results directory -> $gazebo_conf{'Target_Results_Dir'} \n\n" unless ($opt{q});
+}
+
+# select the group directories to look through  
+my $tg;
+my @grps = ();
+my $me = `whoami`;
+chomp $me;
+
+# only look at gzshared in ATC mode
+#if ( $opt{a} ) {
+#  push(@grps, "gzshared");
+#} elsif ( "$opt{g}" ne "") {
+#  push(@grps, $opt{g});
+#} else {
+#  $tg = `$GB/gazebo_listgrp -u $me`; 
+#  chomp $tg;
+#  @grps = split(/ /, $tg);
+#}
+
+# for now it's only gzshared
+push(@grps, "gzshared");
+
+my $group;
+foreach $group (@grps) {
+
+  $cmd = "$GB/find_test_dirs -s $start -e $end -g $group";
+
+  my $totalLogsProcessed  = 0;
+  my @fields;
+  my $ld;
+  foreach $_ (`$cmd`) {
+    chomp;
+
+    # skip null strings
+    next if ( $_ eq "" );
+
+    @fields = split /\//, $_;
+    $ld = pop(@fields);
+
+    #skip log if name starts with a number
+    next if ( $ld =~ /^\d/ );
+
+    @lfs = glob("$_/*.log");
+    # get correct log file
+    foreach $f (@lfs) {
+      my $tlf = basename($f);
+      if ($tlf =~ /^$testName/) {
+        $lf = $f;
+      }
+    }
+
+
+    if ("$opt{t}" ne "") {
+        #skip this log if user not wanting this particular test
+        next if ( $ld !~ /$opt{t}/i );
+    }
+
+    if ("$opt{u}" ne "" ) {
+        #skip this log if user not wanting this particular machine segment 
+        next if ( $ld !~ /$opt{u}/ );
+    }
+
+    my $Res;
+    if ( -r "$lf" ) {
+        $log_directory = dirname($lf);
+
+        # leave some cruft around to show log has been uploaded 
+        if (( ! -e "$log_directory/dbi" ) || ($opt{f})) {
+
+            if ( $opt{f} ) {
+                $Res = `$GB/mysql/storeresultsDBI2 -f -l $lf`;
+            } else {
+                $Res = `$GB/mysql/storeresultsDBI2 -l $lf`;
+            }
+            if ( $Res =~ /success/ ) { 
+                  $totalLogsProcessed++; 
+                  `touch "$log_directory/dbi"`;
+                  print "$lf uploaded to DB\n" unless ($opt{q});
+            } else {
+               print "WARNING!, database store of $lf failed. $Res\n" unless ($opt{q});
+            }
+
+        }
+
+    } else {
+        print "WARNING!, $lf not readable\n" unless ($opt{q});
+    }
+  }
+  print "\n$0: processed $totalLogsProcessed logs\n";
+}
+
+exit;
+
+sub usage {
+
+    print "\n";
+    print "usage: $0 [options] \n";
+    print "              -h help \n";
+    print "              -e 'process logs ending on yyyy-mm-dd, default is today'\n";
+    print "              -s 'process logs starting on yyyy-mm-dd, default is 15 days ago'\n";
+    print "              -t 'process logs with this test name. Partial match ok'\n";
+    print "              -q 'quiet mode, only print final results'\n";
+    print "              -u 'process logs with this segment name. Exact match necessary'\n";
+    print "\n\n";
+
+}

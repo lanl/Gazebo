@@ -1,0 +1,170 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2010, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+#
+# add myself to the DB
+# obviously a gaping denial of service issue here. However, if you've already been
+# given the DB name and password and IP tables let's this machine connect to the DB
+# there are bigger problems to deal with then, than if this is used inappropriately.
+#
+
+#use lib "$ENV{'GZHOME'}/bin/mysql/perl/lib64/perl5/site_perl/5.8.5";
+use File::Basename;
+use DBI;
+use Pod::Usage;
+
+(my $prog = $0) =~ s/.*\///;
+
+# read in database config info
+my $db_config_file = "$ENV{GZHOME}/.dbcfg";
+if ( -e $db_config_file) {
+  do $db_config_file; 
+} else {
+  print "$prog: ERROR, no data config file exists\n";
+}
+
+my %attr =
+(
+   RaiseError => 0,
+   PrintError => 0,
+   AutoCommit => 1
+);
+
+use Getopt::Std;
+our %opt;
+getopts("dfhl:", \%opt);
+
+if ( $opt{h}) {  usage(); exit; }
+
+my $uname = `whoami`; 
+chomp $uname;
+my $pw1;
+my $pw2;
+
+  print "enter password to use in Gazebo DB: ";
+  system("stty -echo");
+  $pw1 = <STDIN>;
+  print "\n";
+  print "re-enter password to use in Gazebo DB: ";
+  $pw2 = <STDIN>;
+  print "\n";
+  system("stty echo");
+
+  if ( $pw1 ne $pw2 ) {
+    print "passwords do not match, please try again\n";
+    exit;
+  }
+  chomp $pw1;
+
+if ( $opt{d}) { 
+  print "Debug: would insert name->$uname and your password into $DSN \n";
+  exit;
+}
+
+  # connect to the DB
+  $dbh = DBI->connect ($DSN, $USRNAME, $PSWD, \%attr)
+     or die_handler( "$prog: ERROR, cannot connect to database");
+
+  $_  = localtime($mtime);
+  my ($wday, $mon, $day, $time, $year) = /(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/; 
+  my $dt = "$mon-$day-$year-$time";
+
+# entry time is now located in the created_at field
+$entry = `date +"%F %T"`;
+chomp ($entry);
+
+# now start all the data base work
+# this is quite different for the new rails optimized DB
+
+# process the user 
+
+my $ret = "";
+$ret = $dbh->selectrow_array( "SELECT name FROM users where name='$uname'");
+if ($ret) {
+  print "$prog: user $uname already exists, exiting. \n";
+  exit;
+}
+
+
+# update the user 
+
+  $sth = $dbh->prepare("INSERT INTO users (name, pw, created_at, updated_at) VALUES ('$uname', '$pw1', '$entry', '$entry') ") or die "Can't prepare SQL segments insert statement: ", $dbh->errstr(), "\n";
+  $sth->execute() or die "Can't execute SQL segments table insert: ", $dbh->errstr(), "\n";
+  print "$prog: successfully entered $user into DB \n";
+ 
+  $dbh->disconnect();
+
+
+exit (0);
+
+# error handling routine
+sub die_handler {
+      my $message = shift;
+
+      die "$message\nError $DBI::err ($DBI::errstr)\n";
+}
+
+
+sub usage {
+
+  print "\n\n";
+  print <<usage_info;
+usage: $0 
+         script to create you in the Gazebo DB. It will query you for any info. 
+usage_info
+  print "\n\n";
+}
+

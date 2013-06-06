@@ -1,0 +1,131 @@
+#!/usr/bin/perl
+
+# Description:
+# Create description of node layout of this system.
+# Creates a file called feature_layout in the GZHOME directory.
+# 
+# This was needed to create a more accurate tracking mechanism when
+# clusters are broken up into multiple segments/parts that have
+# different node architectures.
+
+use POSIX;
+
+(my $prog = $0) =~ s/.*\///;
+
+
+# make sure all the ENV vars are set up and we can write the output file
+# ---------------------------------------------------------------------
+
+die "$prog: no Gazebo bin dir (GZBIN) defined!\n"
+    unless (exists ($ENV{GZBIN}));
+my $gzbin = $ENV{GZBIN};
+
+die "$prog: no Gazebo home dir (GZHOME) defined!\n"
+    unless (exists ($ENV{GZHOME}));
+my $gzhome = $ENV{GZHOME};
+
+unless ( do "$gzbin/get_gazebo_config") {
+    die "$prog: get_gazebo_config failed!";
+}
+
+my $outputFile = "$gzhome/feature_layout";
+open(OFILE, " >$outputFile") || die("$prog: Can't open $outFile for writing, $!\n");
+
+
+# set up our globalish variables 
+# ---------------------------------------------------------------------
+
+my %nodeList = ();
+my %cores_per_node = ();
+my @feature_list;
+my %nodeRegex = ();
+
+
+# look for the feature(s) and node regular expression(s) defined in gazebo.conf file 
+# ----------------------------------------------------------------------------
+
+  # grab the line that looks like "Cluster_Segments name1,name2, etc..."
+  my $conf = `$gzbin/gazebo_seeConf | grep "Cluster_Segments:" `;
+  chomp $conf;
+  $conf =~ s/Cluster_Segments:\s+//;
+  my @seg_list = split (",", $conf);
+
+  # break up lines that might look like -> Cluster_Segment_segName featureName,"some-regular-expression"
+  foreach $seg (@seg_list) {
+    my $str = "Cluster_Segment_" . $seg;
+    my $tmp = $gazebo_conf{$str};
+    my @info = split (",", $tmp,2);
+    push @feature_list, $info[0]; 
+    $info[1] =~ s/"//g;
+print "saving regex  $info[1]\n"; 
+    $nodeRegex{$info[0]} = $info[1];
+  }
+
+#print "DEBUG: feature list - @feature_list\n";
+
+# get Moab's understanding of the system  
+# ----------------------------------------------------------------------------
+
+  foreach $f ( @feature_list ) {
+
+    my $sys = `mdiag -n -v | awk '{print \$1, \$3, \$15}' | grep -i $f`;
+    unless ($sys) {
+        print "Can't get system info from Moab, quitting!\n";
+        print "sys -> $sys\n";
+        exit;
+    } 
+    chomp $sys;
+
+    my @line = split ("\n", $sys);
+
+    foreach $l (@line) {
+        my ($name, $cl, $fl) = split (" ", $l);
+
+        # skip this node name if it doesn't match the node regular expression defined in gazebo.conf
+#print "checking out $name, using regex - $nodeRegex{$f}, feature - $f\n"; 
+        next unless ($name =~ /$nodeRegex{$f}/); 
+        $name =~ s/[^0-9]+//; 
+        $name =~ s/\b0+//; 
+
+        my @cores = split (":", $cl );
+# print "  name: $name, cores: $cores[1]\n";
+        # assumption is that all nodes in single family have same cores per node
+        $cores_per_node{$f} = $cores[1];
+        push @{ $nodeList{$f} }, $name;   
+    }
+
+
+  }
+
+# print out the feature layout (basically which nodes belong to which feature) 
+# ----------------------------------------------------------------------------
+
+  for $family ( keys %nodeList ) { 
+    print OFILE "\n$family: ";
+    print "\n$family:\n";
+    my $num_nodes =  @{ $nodeList{$family} };
+    print OFILE "number-of-nodes=$num_nodes ";
+    print "  number-of-nodes=$num_nodes\n";
+    print OFILE "cores-per-node=$cores_per_node{$family} ";
+    print "  cores-per-node=$cores_per_node{$family}\n";
+    my @sl = sort {$a <=> $b} @{ $nodeList{$family} };
+    my $rl = num2range(@sl);
+#    print " @sl\n";
+    print OFILE "node-list=$rl\n";
+    print "  node-list=$rl\n";
+  }
+
+close(OFILE);
+
+
+# wizbang subroutine that will convert a list of numbers to a range list.  ( i.e. "1-4, 8, 12") 
+# ----------------------------------------------------------------------------
+
+sub num2range {
+  local $_ = join ',' => @_;
+  s/(?<!\d)(\d+)(?:,((??{$++1}))(?!\d))+/$1-$+/g;
+  return $_;
+}
+
+exit;
+

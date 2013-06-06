@@ -1,0 +1,410 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+#
+# This script will store the results of a test into the database.
+# gleaning much of the data from the logfile which is provided as the
+# input argument
+#
+
+use File::Basename;
+use DBI;
+use Pod::Usage;
+
+(my $prog = $0) =~ s/.*\///;
+
+# read in database config info
+do "$ENV{GZHOME}/.dbcfg";
+
+my %attr =
+(
+   RaiseError => 0,
+   PrintError => 0,
+   AutoCommit => 1
+);
+
+use Getopt::Std;
+our %opt;
+getopts("dfhl:", \%opt);
+
+if ( $opt{h}) {  usage(); exit; }
+
+my $compiler;   # compiler used to build test code (null, unless applicable) 
+my $drm = "";   # resource manager used to acquire the nodes 
+my $end;        # time when the job ended 
+my $entry;      # time when the job info is submitted to the DB 
+my $et = "";    # actual execution time for job 
+my $group;      # unix group under which test/job is run 
+my $host;       # machine from where resource manager dispatched job  
+my $job_id =  "undef";
+my $lptr;       # directory where log info saved (a file if that's the only data)
+my $mpi;         # mpi library used to run code (null, unless applicable) 
+my $nodes;      # comma seperated list of nodes used to run job 
+my $npes;       # number of processors used 
+my $params = "";    # test parameters used 
+my $res;        # result of test 
+my $start;      # time when the job started
+my $segName;    # segment name
+my $seg_id;     # id of the computer segment. see segment_tbl
+my $th = "gazebo";         # the test harness used. i.e. - "lup"
+my $td;          # trend data 
+my $tn;		# test name
+my $uname;     # user name who ran the job 
+my $version;    # job version. Supplied by job owner in config file   
+
+my $sth;
+my $dbh;
+my $lptr;
+my $dptr;
+my $dbready = 0;
+my $passed = 0;
+my $failed = 0;
+my $et_real = 0;
+my $et_user = 0;
+my $et_sys = 0;
+
+  if ( $opt{l} ) {
+    $lptr = $opt{l};
+    $dptr = dirname($lptr);
+  } else {
+    print "Error: no log file supplied!\n";
+    exit 0;
+  }
+  open( LOG, "<$lptr") or die "Failed to open $lptr: $!\n";
+
+  # if this file exists then we have already added this entry to the
+  # DB. Don't do it again unless force is set.
+  if (( -e "$dptr/dbi" ) && ( ! $opt{f} )) {
+    print "Job already entered into DB, exiting\n";
+    exit 0;
+  } 
+
+  # find the unix group this job ran in
+  my @parts = split("/", $lptr);
+  foreach (@parts) {
+    $group = $_ if /^gz/;
+    chomp $group;
+  }
+
+  my ($dev, $ino, $mode, $nlink, $uid,
+    $gid, $rdev, $size, $atime, $mtime, 
+    $ctime, $blksize, $blick) = stat($lptr);	
+
+  unless ( $opt{d} ) { 
+    #connect to the DB
+    $dbh = DBI->connect ($DSN, $USRNAME, $PSWD, \%attr)
+      or die_handler( "$prog: ERROR, cannot connect to database");
+  }
+
+  $_  = localtime($mtime);
+  my ($wday, $mon, $day, $time, $year) = /(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/; 
+  my $dt = "$mon-$day-$year-$time";
+
+    undef $td;
+    while( <LOG> ) {
+#       print "DEBUGGING: input=$_\n";
+#        chop( $_  );
+#        if( /(.*) file write\/read testing/i ){ $fileSystem = $1; }
+
+      if ( /^<JobID> / ) {
+	 $job_id = $';
+         chomp($job_id);
+	 next;
+      } 
+      if ( /pls_bproc_orted/) {
+         # skip bogus bproc msgs
+         next;
+      }
+      if ( /SSH/) {
+         # skip SSH msgs
+         next;
+      }
+      if( /PASS/i ) {
+         $passed = 1;
+	 next;
+      } 
+      if( /FAIL/i ) {
+         $failed = 1;
+	 next;
+      }    
+      if( /ERROR/ ) {
+         $failed = 1;
+	 next;
+      }    
+      if( /^<start> (\S+)/ ) {
+	 $start = $1;
+	 next;
+      }
+      if( /^<dbready>/ ) {
+	 $dbready = 1;
+	 next;
+      }
+      if( /^<testName> (\S+)/ ) {
+	 $tn = $1;
+	 chomp($tn);
+	 next;
+      }
+      if( /^<segName> / ) {
+	 $segName = $';
+	 chomp($segName);
+	 if ($segName eq "n14") { $segName = "cu14"}; # hack until rr fixed!
+	 next;
+      }
+      if( /^<compiler> / ) {
+	 $compiler = $';
+	 chomp($compiler);
+	 next;
+      }
+      if( /^<mpi> / ) {
+	 $mpi = $';
+	 chomp($mpi);
+	 next;
+      }
+      if( /^<params> / ) {
+	 $params = $';
+	 chomp($params);
+	 next;
+      }
+      if( /^<rmgr> / ) {
+	 $drm = $';
+	 chomp($drm);
+	 next;
+      }
+      if( /^<user> / ) {
+	 $uname = $';
+	 chomp($uname);
+	 next;
+      }
+      if( /^<host> / ) {
+	 $host = $';
+	 chomp($host);
+	 next;
+      }
+      if( /^<vers> / ) {
+	 $version = $';
+	 chomp($version);
+	 next;
+      }
+      if( /^<npes> / ) {
+	 $npes = $';
+	 chomp($npes);
+	 next;
+      }
+      if( /^<nodes> / ) {
+	 $nodes = $';
+	 chomp($nodes);
+	 next;
+      }
+      if( /^<td>\s+(.*)/ ) {
+	 if (defined($td)) { $td = $td . ", " . $1}
+	 else { $td = $1};
+	 next;
+      }
+      if( /^real (\d+.\d+)/ ) {
+#	 $et = "real:=" . $1 . ", ";
+	 $et_real = $et_real + $1;
+	 next;
+      }
+      if( /^user (\d+.\d+)/ ) {
+#	 $et = $et . "user:=" . $1 . ", ";
+	 $et_user = $et_user + $1;
+	 next;
+      }
+      if( /^sys (\d+.\d+)/ ) {
+#	 $et = $et . "sys:=" . $1;
+	 $et_sys = $et_sys + $1;
+	 next;
+      }
+      if( /^<end> (\S+)/ ) {
+	 $end = $1;
+	 next;
+      }
+    } 
+    close( LOG );
+    $et = "real:=" . "$et_real" . ", user:=" . "$et_user" . ", sys:=" .  "$et_sys";
+
+# use the name of the log file as the test name 
+#    $tn = basename $logFile;
+
+   if ( $passed == 0 ) {
+     # pass never found, do a bit more checking
+     if ( $failed == 1 ) {
+	$res = "fail"; 
+     }
+     # so no Fail or Pass, now what?
+     elsif ($start == "") {
+        # doesn't look like it even ran
+         $res = "no data"; 
+     } else {
+        # it ran, but no # explicit results, so # default to fail
+	$res = "fail"; 
+     }
+   } else {
+     if ( $failed == 1 ) {
+      # both pass and fail exist in results file, so fail
+	$res = "fail"; 
+     } else {
+       # a good one, only the word pass exists in the results
+	$res = "pass"; 
+     }
+   }
+
+
+
+$entry = `date --iso-8601=seconds`;
+chomp ($entry);
+
+#some debugging for sanity
+if ($opt{d}) { 
+print "$prog:\n";
+print "\ttestName -> $tn\n";
+print "\tcompiler -> $compiler\n";
+print "\tdrm -> $drm\n";
+print "\tend time -> $end\n";
+print "\tinsert entry time -> $entry\n";
+print "\tex_time -> $et\n";
+print "\thost -> $host\n";
+print "\tjobId -> $job_id\n";
+print "\tlog ptr -> $dptr\n";
+print "\tmpi -> $mpi\n";
+print "\tnodes -> $nodes\n";
+print "\tnpes -> $npes\n";
+print "\tntkgrp -> $group\n";
+print "\ttest parameters -> $params\n";
+print "\tresult  -> $res\n";
+print "\tsegName -> $segName\n";
+print "\tstart time -> $start\n";
+print "\ttestHarness -> $th\n";
+print "\ttrendData -> $td\n";
+print "\tuser -> $uname\n";
+print "\tversion -> $version\n";
+
+
+} elsif ($dbready) {
+
+# now start all the data base work
+
+  # load up the results table if not in debug mode and the test/job has data to use 
+  $sth = $dbh->prepare ("INSERT INTO results_tbl (test_name, job_id, seg_name, in_params, drm, start_time, end_time, entry_time, time, num_procs, log_ptr, compiler, mpi, user, host, result, version, ntkgrp) VALUES ('$tn', '$job_id', '$segName', '$params', '$drm', '$start', '$end', '$entry','$et','$npes','$dptr','$compiler','$mpi','$uname','$host','$res','$version', '$group') ") or die "Can't prepare SQL results insert stmt: ", $dbh->errstr(), "\n";
+  $sth->execute() or die "Can't execute SQL results table insert: ", $dbh->errstr(), "\n";
+
+  # find the test_id key used by this entry so it can be used in the next two inserts
+  my $test_id = $dbh->{'mysql_insertid'};
+
+# seperate the node list and enter into the nodes table
+  my $this_node;
+  my @nodes = split(" ", $nodes);
+  foreach $this_node (@nodes) {
+    chomp $this_node;
+#print "attempting to insert test_id->$test_id, node->$this_node\n";
+  # load up the nodes table if not in debug mode and the test/job has data to use 
+    $sth = $dbh->prepare ("INSERT INTO ran_on_nodes_tbl (test_id, node) VALUES ('$test_id', '$this_node') ") or die "Can't prepare SQL nodes insert stmt: ", $dbh->errstr(), "\n";
+    $sth->execute() or die "Can't execute SQL ran_on_nodes_tbl insert: ", $dbh->errstr(), "\n";
+  }
+
+use constant MAX_CNT => 4096;
+my $count = 0;
+# seperate the trend data and enter into the trend data table
+  if ( defined($td)) {
+    chomp ($td);
+    my $td_name = "";
+    my $td_val = "";
+    my $td_units = "";
+    my @td = split(",", $td); # multiple td entries
+    my $this_entry;
+    foreach $this_entry (@td) {
+      $count++;
+      if ( $count > MAX_CNT ) {last;}
+      my @tmp = split(" ",  $this_entry);
+      $td_name = $tmp[0];
+      $td_val = $tmp[1];
+      $td_units = $tmp[2];
+    
+#print "attempting to insert test_id->$test_id, td_name->$td_name, td_val->$td_val, td_units->$td_units\n";
+
+  # load up the trend data table
+      $sth = $dbh->prepare ("INSERT INTO trend_data_tbl (test_id, name, val, units) VALUES ('$test_id', '$td_name', '$td_val', '$td_units') ") or die "Can't prepare SQL trend data insert stmt: ", $dbh->errstr(), "\n";
+      $sth->execute() or die "Can't execute SQL trend_data_tbl insert: ", $dbh->errstr(), "\n";
+    }
+  }
+
+  $dbh->disconnect();
+}
+
+print "successfully entered\n";
+
+exit (0);
+
+# error handling routine
+sub die_handler {
+      my $message = shift;
+
+      die "$message\nError $DBI::err ($DBI::errstr)\n";
+}
+
+
+sub usage {
+
+  print "\n\n";
+  print <<usage_info;
+usage: storeresultsDBI [options] -l <log_file> 
+          -d print debugging info 
+          -h print this help screen
+          -l <log_file>. Specify log file to parse 
+usage_info
+  print "\n\n";
+}
+

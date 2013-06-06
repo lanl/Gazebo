@@ -1,0 +1,480 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2012, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2012. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# Description: 
+# GAZEBO GLEAN -- This script moves the files (machine, post_complete, and test*.log)  from the
+# temporary log directory into the final results area. It will also create the run_time and trend_data
+# files in that final results area too.
+# 
+# additionally, if the users specifies files to be saved in the gzconfig file, they will be moved
+# to the final results area too. 
+
+my $prog;
+($prog = $0) =~ s/.*\///;
+
+# ------ get gazebo config values -------------- #
+
+use Cwd 'abs_path';
+use File::Basename;
+our $pwd = dirname(abs_path("$0"));
+chomp($pwd);
+unless ( do "$pwd/get_gazebo_config") {
+#  die "get_gazebo_config failed!";
+  print "get_gazebo_config read error!\n";
+  exit;
+}
+
+# get list of cluster segments 
+my $i = $gazebo_conf{"Cluster_Segments"};
+our @cluster_segs = split ',',$i;
+
+
+# ------ got gazebo config values -------------- #
+
+our (%opts,$treebase,$test_home);
+my    (
+	$dirname,$fullpath,$which_format,$basedir,$path,$logdir,$atcmode,
+	$test,$jobid,$sn,$date,$yr,$mo,$dytime,$gmt,$dy,$time,@nada,$testName,$execFile,
+	$logFileName,$ok,$x,$y,$z,$use,$status,$arg,$orig_name
+      );
+
+## ------------------------------------------------------- ##
+
+# NOTE: set the following manually as desired
+our $include_spread_sheet = 0;	# 1=create spreadsheet data file, 0=don't
+
+## ------------------------------------------------------- ##
+
+# create usage message
+$use = <<EOF;
+
+ Usage: $0 -f <full_path_of_test_directory> -g <group_name> [-t testName] [-p] [-d] [-v]
+    where <full_path_of_test_directory> is expected to be of the form:
+	/.../testname__executable__jobid__machine.date
+    such as:
+	.../.../test4__runTest4__5368__yra.2006-12-03T13:24:41-0700
+    -g specifies the group name (team name) under which to store the data;
+       NOTE: all gazebo team/group names begin with gz and must be less than 9 characters
+       If -g is not specified, the value of environment variable GZGRP is used.
+    -t name of the test if different from test_name in path
+    -p return the directory path where this test data will finally reside, no work done.
+    -d debug mode; just print what would be done, but do nothing
+    -v verbose mode; print what is being done
+EOF
+
+
+# command line options
+use Getopt::Std;
+$opts{f} = "";
+$opts{t} = "";
+$opts{g} = "";
+getopts("f:g:dphvt:",\%opts);
+$arg = "$ARGV[0]";
+
+if ( $opts{h} ) {
+   print "$use\n";
+   exit;
+}
+
+if ( $opts{g} eq "" ) {
+   if (defined $ENV{'GZGRP'}) {
+     $opts{g} = "$ENV{'GZGRP'}";
+   } else {
+     print "$0: ERROR: null group/team name. Aborting. See -g option.\n";
+     exit;
+   }
+}
+
+$atcmode = 0;	# assume production execution unless atc specified
+our $team;
+# use team name to determine which operational mode we're in
+if ( $opts{g} ) {
+  $team = "$opts{g}";
+  if ( "$team" eq "ATC" ) { 
+     $atcmode = 1;	# now we're in ATC mode of execution
+     $team = "gzshared";
+  }
+} else {
+  $team = "gzshared";
+}
+
+$basedir =  qq($gazebo_conf{"Target_Results_Dir"}/$team);     # base dir for final results
+$treebase = $gazebo_conf{"Target_Results_Dir"};
+$test_home = $gazebo_conf{"Gazebo_Home"};     # base directory where everything resides
+
+use strict;
+
+chomp($test_home);
+chomp($treebase);
+
+$fullpath = "$opts{f}";		# full path of source dir where working data exists
+
+# test file path as input for reasonableness
+if (( "$fullpath" eq "" ) && ( "$arg" eq "" )) {
+   print "Error *** No test directory path specified, nothing done. ***\n\n$use\n";
+   exit;
+
+} else {
+   if ( "$fullpath" eq "" ) { $fullpath = "$arg"; }
+
+   # get directory pieces from file name
+   $dirname  = basename("$fullpath");
+   $orig_name = "$dirname";
+   $dirname =~ s/\~//;
+   @nada			= split '__',$dirname;	# testname__exe__jobid__segment.date
+   $test 			= $nada[0];
+   if ( "$opts{t}" ne "" ) { $test = "$opts{t}"; }
+   $testName 			= $nada[0];
+   $execFile 			= $nada[1];
+   $logFileName = $testName . "__" . $execFile;
+   if ( $nada[1] =~ /Tp/ ) {
+      $jobid                    = $nada[2];
+      $sn	                = $nada[3];
+   } else {
+      $jobid                    = $nada[2];
+      $sn	                = $nada[3];
+   }
+   @nada 	      		= split '\.',$sn;
+   $sn				= $nada[0];
+   $date			= $nada[$#nada];
+   ($yr,$mo,$dytime,$gmt)	= split '-',$date;
+   ($dy,$time)			= split 'T',$dytime;
+
+   # ---  now be sure request is reasonable  ---
+   $ok = 1;
+
+   # check jobid to be sure it's a number
+   use POSIX qw(strtod);
+   $! = 0;
+   ($x,$y) = strtod($jobid);
+   $ok = 0 if (( "$jobid" eq "" ) || ( $y != 0 ) || $! );
+
+   # check test name
+   $ok = 0 unless ( "$test" ne "" );
+
+   # check the date 
+   $x = datenumber("$date");			# test date
+   $y = datenumber("2020-12-31T23:59:59-0700");	# end of days
+   $ok = 0 if ( "$x" eq "-1" );
+   $ok = 0 if ( "$x" gt "$y" );
+
+   if (! $ok ) {		# return with invalid result if input is bad
+      print "$0: error *** improperly formatted directory name, nothing done ***\n";
+      print "\terror *** improper directory name is: $fullpath\n";
+      exit;
+   }
+}
+
+# ---  request is reasonable, set up for action below  ---
+
+if (! $atcmode ) {
+   $dirname = "${testName}__${execFile}__${jobid}__${sn}\.$date"; # create new test dir name with new segment name in it
+}
+
+# determine what we are to do
+@nada = split '\.',$test;
+my $newpath = "$yr/$yr-$mo/$yr-$mo-$dy/$sn/$nada[0]";
+$path = "$basedir/$newpath";
+
+# "-p" option is request to know the final resting place for this data.
+if ( $opts{p} ) {
+   print "$path/$dirname\n";         # path where it would get moved
+   exit;
+}
+
+# create new path if needed
+if (! -e "$basedir" ) {
+   if ( $atcmode ) {
+      system("mkdir -p $basedir\n");
+   } else {
+      system("(mkdir -p $basedir; chgrp $team $basedir)\n");
+   }
+}
+
+# debug step to see what is there a this point
+if ( ! -d "$basedir" ) {
+   print "$0: *** no basedir : $basedir, aborting.\n";
+   exit;
+}
+if ( ! -d "$basedir/$newpath" ) {
+   print "$0: *** no newpath : $basedir/$newpath, aborting.\n";
+   exit;
+}
+if ( ! -d "$basedir/$newpath/$dirname" ) {
+   print "$0: *** target directory did not get created: $basedir/$newpath/$dirname, aborting.\n";
+   exit;
+}
+
+unless ( $opts{d} ) {
+
+      # move all files from the tld to the final results directory 
+      if ( -w "$path/$dirname" ) {	# make sure directory is writable 
+         if ( $opts{v} ) { print "Gleaning directly from $fullpath into \n\t$path/$dirname\n"; }
+         if ( "$fullpath" ne "$path/$dirname" ) {
+            # copy the data, but don't remove it. User may want to keep it locally too.
+            $status = system("cp --no-preserve='ownership' $fullpath/* $path/$dirname\n");
+            if ( $status ) { 
+               print "$0: *** System() returned $status when attempting copy from $fullpath into\n\t$path/$dirname\n    Nothing done. ***\n";
+               exit(-1);
+            }
+         }
+         # glean results into target directory as approprite
+         gleanResults("$path/$dirname","$orig_name","$logFileName");
+   
+      } else {
+         print "*** Unable to write to $path/$dirname\n";
+         exit (-1);
+      }
+
+} else {	# do nothing mode, just print what we wanted to do
+   if ( -w "$path/$dirname" ) {		# make sure directory is writable 
+      print "Would glean directly from $fullpath into \n\t$path/$dirname\n";
+   } else {
+      print "Would glean and rsync from $fullpath into \n\t$path/$dirname\n";
+   }
+}
+
+# done
+exit;
+
+### ------------------------------------------------------------------- ###
+
+# make a date into a comparison number
+# expects date of the form: 2006-09-16T10:23:xx-xxxx
+sub datenumber {
+   my ($date,@nada);
+   $date = "$_[0]";
+   @nada = split ':',$date;     # this handles dates with seconds, etc.
+   $date = "$nada[0]:$nada[1]";
+   return("-1") if (! ( $date =~ /-/ ));
+   $date =~ s/-//g;
+   return("-1") if (! (( $date =~ /T/ ) || ( $date =~ /_/ )));
+   $date =~ s/T//g;
+   $date =~ s/_//g;
+   $date =~ s/://g;
+   return("$date");
+}
+
+### ------------------------------------------------------------------- ###
+
+
+# routine to glean test results as appropriate, creating special files and DB entries, etc.
+sub gleanResults {
+      my (
+	$dirname,$fullpath,$testName,@nada,$filename,@logdata,$trend_values,
+	$run_values,$i, $seg, $spread, $etime, $error, 
+	$total_run_time
+	 );
+      our $trend_data_symbol 	= "<td> ";	# trend data (name value units)
+      our $trend_units_symbol 	= "<tdu> ";	# trend data units (for all trend data items)
+      our $run_time_symbol    	= "real ";	# execution wall clock time (output from time command)
+      our $run_time_symbol2    	= "user ";	# execution user time (output from time command)
+      our $run_time_symbol3    	= "sys ";	# execution system time (output from time command)
+      our $machine_symbol    	= "<segName> ";	# target execution machine
+      our $pelist_symbol      	= "<nodes> ";	# list of nodes actually run on
+      our $rmgr_symbol      	= "<rmgr> ";	# resource manager active when job ran
+      our $gleanableFlag      	= "post_complete";# name of completion file
+
+      our $DBflag_symbol	= "<dbready>";	# must be first entry in file - means is DB aware
+      our $startTime_symbol	= "<start>";	# clock snapshot at start of runit execution
+      our $stopTime_symbol	= "<end>";	# clock snapshot at end of runit execution
+      our $testNamesymbol	= "<testName> ";# name of the test being run 
+      our $jobID_symbol		= "<JobID> ";	# job identifier returned from the scheduler
+
+      $fullpath = "$_[0]";	# full path of test directory
+      $dirname  = "$_[1]";	# test directory name
+      my $lfn = "$_[2]";		# log file name
+      $filename = "$fullpath/$lfn.log";
+      if ( $opts{v} ) { print "--- gleaning $fullpath ... \n"; }
+
+#print "DEBUG: opening $filename to read\n";
+
+      unless ( open(FILE,"<$filename") ) {
+          print "*** Unable to open $filename for reading: $! ; skipping this test\n";
+          return;
+      }
+      $/ = "\n";
+      @logdata = <FILE>;
+      close(FILE);
+
+      $total_run_time = 0;
+      $trend_values = "";
+      $run_values = "";
+      for ($i=0; $i<@logdata; $i++) {
+         if ( $logdata[$i] =~ /$trend_data_symbol/ ) {
+            # save the trend_data value
+            $logdata[$i] =~ s/\.*$trend_data_symbol//;
+   	    $trend_values .= "$logdata[$i]";
+         }
+         if ( $logdata[$i] =~ /$trend_units_symbol/ ) {
+            # save the trend_data units
+            $logdata[$i] =~ s/$trend_units_symbol//;
+   	    $trend_values .= "units=$logdata[$i]";
+         }
+
+         if ( $logdata[$i] =~ /$run_time_symbol/ ) {
+            # save run_time data here
+   	    $run_values .= "$logdata[$i]" . "$logdata[$i+1]" . "$logdata[$i+2]";
+            @nada = split ' ',$logdata[$i];
+            $nada[1] =~ s/\s//g;
+            $total_run_time += $nada[1];
+         }
+
+         if ( $logdata[$i] =~ /$machine_symbol/ )  {
+            # save name of machine segment
+   	    $seg = "$logdata[$i]";
+   	    $seg =~ s/$machine_symbol//g;
+   	    chomp($seg);
+         }
+      }
+
+      $run_values = "total_runtime $total_run_time\n$run_values";
+
+      if ( $testName =~ /qcd/ ) {
+
+	 # create trend_data file 
+	 if ( -e "$fullpath/psums.pg.etime" ) {
+            if (open(FILE,">$fullpath/trend_data")) {
+   	       if ( -s "$fullpath/psums.pg.etime" ) {
+                  $etime = `cat $fullpath/psums.pg.etime`;
+      	          chomp($etime);
+      	          print FILE "pg_time $etime\n";
+   	       } else {
+   	          system("echo ' ' >> error.tmp$$\n");
+   	       }
+
+   	       if ( -s "$fullpath/psums.prep.etime" ) {
+                  $etime = `cat $fullpath/psums.prep.etime`;
+      	          chomp($etime);
+      	          print FILE "prep_time $etime\n";
+   	       } else {
+   	          system("echo ' ' >> error.tmp$$\n");
+   	       }
+
+   	       if ( -s "$fullpath/psums.prop.etime" ) {
+                  $etime = `cat $fullpath/psums.prop.etime`;
+      	          chomp($etime);
+      	          print FILE "prop_time $etime\n";
+   	       } else {
+   	          system("echo ' ' >> error.tmp$$\n");
+   	       }
+      	       print FILE "$trend_values";
+               close(FILE);
+	    } else {
+
+               if ( $opts{v} ) { print "*** Unable to open $fullpath/trend_data for writing: $!\n"; }
+   	       system("echo ' ' >> error.tmp$$\n");
+	    }
+	 }
+
+         if ( -s "error.tmp$$" ) {
+	    print "*** some qcd output files missing ***\n";
+	 }   
+	 system("rm -f error.tmp$$\n");
+
+
+      } else { 
+
+         # non qcd test runs - save trend data
+
+         if ( $opts{v} ) { print "--- writing trend data file ... \n"; }
+         $trend_values =~ s/$trend_data_symbol//g;
+         if ( -e "$fullpath/trend_data" ) {
+            system("chmod 664 $fullpath/trend_data\n");
+         }
+         if (open(FILE,">$fullpath/trend_data")) {
+            print FILE "$trend_values";
+            close(FILE);
+	 } else {   
+            if ( $opts{v} ) { print "*** Unable to open $fullpath/trend_data for writing: $!\n"; }
+	    $error = 1;
+	 }   
+      } 
+
+      # save run time data
+      if ( $opts{v} ) { print "--- writing run time data file ... \n"; }
+      if ( -e "$fullpath/run_time" ) {
+         system("chmod 664 $fullpath/run_time\n");
+      }
+      if (open(FILE,">$fullpath/run_time")) { 
+         print FILE "$run_values";
+         close(FILE);
+      } else {   
+         if ( $opts{v} ) { print " *** Unable to open $fullpath/run_time for writing: $!\n"; }
+	 $error = 1;
+      }   
+
+      if ( $include_spread_sheet ) {
+         # create spread-sheet data file here
+         if ( $opts{v} ) { print "--- writing spread-sheet data file ... \n"; }
+         $spread = `$test_home/bin/spreadit_util "$testName" "$fullpath"`;
+   
+         if ( -e "$fullpath/spread_sheet" ) {
+            system("chmod 664 $fullpath/spread_sheet\n");
+         }
+         unless( open(FILE,">$fullpath/spread_sheet")) { 
+            if ( $opts{v} ) {print "*** Unable to open $fullpath/spread_sheet for writing: $!\n"; }
+	    $error = 1;
+         } else {
+            print FILE "$spread";
+            close(FILE);
+         }
+      }
+
+      if ( $error ) {
+         print "*** Unable to open some outputfiles for writing.\n";
+      }
+}

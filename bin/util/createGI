@@ -1,0 +1,26 @@
+#!/bin/tcsh -x
+
+# creates the golden images from a set of psums files 
+# running the QCD test will place its psums files in the log directory
+# usage: createGI <log_directory_where_psums_files_reside>
+
+set testHome = ${GZHOME}/test_exec/qcd
+
+if ($#argv > 0 ) then 
+  set dir = "$1"
+
+  @ npes = `egrep "^<npes>\s*" ${dir}/*.log | awk '{print $2}'`
+  if (${npes} < 1) then
+    echo "can't read log file"
+    exit 
+  endif
+
+  grep -v "+" ${dir}/psums.pg | md5sum > ${testHome}/chksum.gi.pg-${npes}
+  grep -v "+" ${dir}/psums.prep | md5sum > ${testHome}/chksum.gi.prep-${npes}
+  grep -v "+" ${dir}/psums.prop | md5sum > ${testHome}/chksum.gi.prop-${npes}
+else
+    echo "need to provide directory where psums files exist"
+endif
+
+exit
+

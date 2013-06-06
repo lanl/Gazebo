@@ -1,0 +1,17 @@
+Database helper scripts for gazebo storage. Obviously needs a database server (mysql)
+running on some accessible host that has been set up with the proper schema. Also, the
+perl DBD module mysql.pm must be available to the host that attempts to connect to the DB. 
+
+Instructions for setting up this server are not covered here. However, the gazebo schema
+sql file (gazebo.sql) is included here to help create the gazebo database.
+
+General "user" accounts should be created with read/write/update/view permissions on the
+gazebo database tables. Edit the .dbcfg file in the GZHOME directory so these scripts can 
+do their work.
+
+Some of these scripts are merely here for example purposes. However, the storeresultsDBI
+script is the workhorse script that uploads test result data.
+
+Gazebo will run and store test results in the configured test results directory even if no
+database exists. If at a later time a database is created all the test results can be up-loaded
+into the database with the gz_uploadLogs2DB script found in the GZBIN directory.

@@ -1,0 +1,133 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# Description:
+# Script used to convert torque pbsnodes output into old LSF type  bhosts
+# output. 
+# 
+
+
+use POSIX;
+use Getopt::Std;
+use File::Basename;
+
+($prog = $0) =~ s!.*/!!;
+
+use Cwd 'abs_path';
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+unless ( do "$pwd/get_gazebo_config") {
+  die "get_gazebo_config failed!";
+}
+
+    my %freecnt = ();
+    my $freecnt=0;
+    my %downcnt = ();
+    my $downcnt=0;
+    my %totalcnt = ();
+    my $totalcnt=0;
+    my %used = ();
+    my $used=0;
+    my $lastline;
+    my $segName;
+    our %opt;
+
+    getopts("c", \%opt);
+
+    my $where_is_it = `which pbsnodes`;
+    chomp $where_is_it;
+    unless (-x "$where_is_it") {
+        print "Torque not installed on system, quitting.\n"; 
+	exit;
+    }
+
+    printf ("%-6s %13s %10s %6s %6s\n", "Name", "compute-nodes", "available", "down", "used") unless $opt{c};
+
+    my $lookfor = $gazebo_conf{'Node_Regex'};
+    $cmd = "pbsnodes | grep -B 1 'state '";
+    open(OUT, "$cmd |");
+    while ( my $thisout = <OUT> ) {
+      # grab the segment name and node number
+       $thisout =~ m/$lookfor/; 
+      $segName = $1;
+
+      if ($thisout =~ /state = free/) {
+	$freecnt{$segName}++; 
+        $totalcnt{$segName}++;
+      }
+      elsif ($thisout =~ /state = down/) {
+	$downcnt{$segName}++; 
+        $totalcnt{$segName}++;
+      }
+      elsif ($thisout =~ /state = job-exclusive/) {
+	$used{$segName}++; 
+        $totalcnt{$segName}++;
+      }
+
+
+      $lastline = $thisout;
+      if ( $thisout =~ /(.*)-\d\d\d/ ) { 
+        $segName = $1;
+#        print "segName is $segName\n"; 
+      }
+      
+    }
+    close (OUT);
+
+    foreach $seg ( keys (%totalcnt) ) {
+      printf ("%-6s %13d %10d %6d %6d\n", $seg, $totalcnt{$seg}, $freecnt{$seg}, $downcnt{$seg}, $used{$seg});
+    }
+
+exit 0;

@@ -1,0 +1,1657 @@
+#!/usr/bin/perl -w
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# Description:
+# This program, which runs as a daemon, will handle myth requests.
+# It listens on port MYTHPORT (see /var/gazebo/etc/mythd.conf) for these requests
+# and handles them accordingly.  Run "mythd -h" for more info.
+#
+# To start just type "mythd" or "mythd -d" for extended debug info in the
+# /var/gazebo/log/mythd.log file. It will daemonize itself when starting.
+#
+
+#setup global variables
+$| = 1; # disable buffered I/O 
+my $prog;
+($prog = $0) =~ s/.*\///;
+
+
+my $myth_client_socket;
+
+use POSIX;
+use File::Basename;
+use Pod::Usage;
+use strict;
+use File::stat;
+use Fcntl;
+use MLDBM qw(DB_File);
+use Sys::Hostname; our $host = hostname;
+use threads;
+use threads::shared; # allow for share data structures across threads 
+use IO::Socket;
+use Getopt::Long;
+&Getopt::Long::config(
+   'bundling',                  # allow option bundling
+   'require_order'              # don't mix non-options with options
+);
+
+
+$ENV{LANG}='C';
+$ENV{PATH}="/usr/kerberos/bin:/bin:/usr/bin:/usr/local/bin:/usr/bin/X11:/opt/MOAB/bin:/opt/PBS/bin:/usr/x11R6/bin:.";
+
+# run as "user" gazebo 
+# so make sure real and effective user id's are gazebo's  
+my $id = getpwnam("gazebo");
+unless (($< == $id) && ($> == $id)) {
+  eval {
+    $> = $id;
+    $< = $id;
+  };
+  if ($@) {
+   die "$prog: can't make process owner gazebo: $!";
+  }
+}
+
+# handle any input options 
+my $opt_config ='/var/gazebo/etc/mythd.conf';
+my $opt_man;
+my $opt_help;
+my $opt_debug;
+my $opt_fresh; # start fresh with no prior run status info
+
+pod2usage(2) unless &GetOptions(
+   'c|config=s'         => \$opt_config,
+   'd|debug'            => \$opt_debug,
+   'f|fresh'            => \$opt_fresh,
+   'man'                => \$opt_man,
+   'h|help'             => \$opt_help,
+);
+
+pod2usage(1) if ($opt_help);
+pod2usage(-verbose => 2) if ($opt_man);
+
+my $config_file=$opt_config;
+
+print "$prog: running as user id - $>\n";
+
+my $st = stat($config_file);
+die "$prog: unable to stat $config_file.\n" unless (defined($st));
+print(qq|$prog: $config_file must not be world writable!|)
+   if ($st->mode & S_IWOTH);
+print(qq|$prog: $config_file must not be group writable!|)
+   if (($st->mode & S_IWGRP) >> 3);
+print(qq|$prog: $config_file must be readable!|)
+   unless (($st->mode & S_IRUSR) >> 6);
+
+require $config_file;        # include config file defs
+
+# check for required ENV parameters
+die "$prog: no server port - please define MYTHPORT in $config_file!\n"
+   unless (exists($ENV{MYTHPORT}));
+
+die "$prog: no test home - please define TESTHOME in $config_file!\n"
+   unless (exists($ENV{TESTHOME}));
+
+die "$prog: no architecuture type - please define ARCH in $config_file!\n"
+   unless (exists ($ENV{ARCH}));
+
+die "$prog: no cluster name  - please define CN in $config_file!\n"
+   unless (exists ($ENV{CN}));
+
+die "$prog: no GAZHOME directory  - please define GAZHOME in $config_file!\n"
+   unless (exists ($ENV{GAZHOME}));
+
+no strict 'vars';
+do "$ENV{'GAZHOME'}/bin/get_gazebo_config";
+our $seg_list = $gazebo_conf{'Cluster_Segments'};
+use strict;
+
+
+# create the user myth directory where all work is done
+my $myth_dir = "$ENV{HOME}/.gazebo-$ENV{CN}";
+unless (-e $myth_dir) {
+   system("mkdir -p $myth_dir");
+   die "$prog: can't make $myth_dir directory"
+     unless (-e $myth_dir);
+}
+
+my $log_dir='/var/gazebo/log/';
+unless (-e $log_dir) {
+   system("mkdir -p $log_dir");
+   die "$prog: can't make $log_dir directory"
+     unless (-e $log_dir);
+}
+
+my $MYTHPID = "$log_dir/$prog.pid"; 
+my $MYTHLOG = "$log_dir/$prog.log"; 
+my $SERVER_PORT = $ENV{MYTHPORT};
+my $DRMLogDir = "$myth_dir/drmlogdir";
+my $GAZHOME = $ENV{HOME};
+
+# only run one instance of this program on this host, so kill the old one 
+justme();
+
+# background myself and go away saving pid
+fork && exit;
+open(MYTH, "> $MYTHPID") or die "$prog: can't write $MYTHPID: $!";
+print MYTH "$$\n";
+close MYTH or die "$prog: can't close $MYTHPID: $!";
+
+# redirect STDIO for logging
+open STDOUT, ">> $MYTHLOG" or die "$prog: can't redirect stdout"; 
+open STDERR, ">> $MYTHLOG" or die "$prog: can't redirect stderr"; 
+select STDOUT; $| = 1; # make unbuffered
+select STDERR; $| = 1; # make unbuffered
+
+# dissociate from controlling terminal and process group
+POSIX::setsid() or die "$prog: can't start new session: $!";
+
+# setup graceful signal handling
+my $time_to_die : shared = 0;
+my $sig;
+my $now;
+
+# catch int,term, and hup signals so they are handled cleanly 
+sub killme_handler {
+   ($sig) = @_;
+   $now = `date`;
+   print "$prog: $now -  process shutting down from signal SIG$sig \n";
+   $time_to_die = 1;
+}
+
+# catch sigchld signals so they are handled cleanly 
+sub child_reaper {
+   my $stiff;
+
+   while (($stiff = waitpid(-1, WNOHANG)) > 0) {
+     print "  - child_reaper just caught pid - $stiff \n";
+   }
+   $SIG{CHLD} = \&child_reaper;
+}
+
+# setup socket connection with no buffered ouptput 
+my $send_flags |= O_NONBLOCK;
+my $listen = IO::Socket::INET->new(
+	LocalPort => $SERVER_PORT,
+	ReuseAddr => 1,
+	Timeout => 20, 
+	Listen => 5, )
+  or die "Couldn't act as myth server on port $SERVER_PORT : $@\n";
+
+# prepare to handle some signals gracefully
+$SIG{INT} = $SIG{TERM} = $SIG{HUP} = \&killme_handler;
+$SIG{CHLD} = \&child_reaper;
+
+$now = `date`;
+print "START - $prog: $now - listening for requests on port $SERVER_PORT \n"; 
+ 
+my %log_hash : shared = (); # global hash which associates log directories with completed jobid's 
+my %active_jobs : shared = (); # global hash which associates DRM output dirs with active jobid's 
+my %active_groups : shared = (); # global hash which associates group/team names with active jobid's 
+
+# hash database definitions 
+my $hl = "$myth_dir/myth_resultslog.db";
+my $aj = "$myth_dir/myth_activejobs.db";
+my $ag = "$myth_dir/myth_activegroups.db";
+
+# start with new empty hashes if started with the fresh (-f) option 
+if ($opt_fresh) {
+  print "debug: removing $hl\n" if $opt_debug;
+  unlink $hl;
+  print "debug: removing $aj\n" if $opt_debug;
+  unlink $aj;
+  print "debug: removing $ag\n" if $opt_debug;
+  unlink $ag;
+  %log_hash = ();
+  %active_jobs = ();
+  %active_groups = ();
+}
+
+# make hash(s) persistent with multi-level data base management package 
+# this makes the hash reside on disk 
+tie(%log_hash, "MLDBM", "$hl", O_CREAT|O_RDWR, 0666) or die "$prog: can't tie to $hl: $!";
+tie(%active_jobs, "MLDBM", "$aj", O_CREAT|O_RDWR, 0666) or die "$prog: can't tie to $aj: $!";
+tie(%active_groups, "MLDBM", "$ag", O_CREAT|O_RDWR, 0666) or die "$prog: can't tie to $ag: $!";
+
+sub handle_socket_connection {
+# thread based request handler 
+# each new client connection gets it's own thread
+
+  my $dt;	# date time
+  my $id;	# connection id
+  our $socket = shift; # socket handle
+  my $output_to_client = shift || $socket;  
+  my $lines_in = 0;
+  my $input_line;
+  my $still_waiting = 1;
+
+  # find out who connected to me
+  my $this_cli = getpeername($socket); 
+  my ($port, $iaddr) = unpack_sockaddr_in($this_cli);
+  my $ip_addr = inet_ntoa($iaddr);
+
+
+sub catch_alrm {
+    # finish the session, I'm not waiting forever
+        my $signame = shift;
+        alarm(0); 
+        print "socket closing, pid: $$ got a SIG$signame\n";
+        close($socket);
+	return;
+}
+$SIG{ALRM} = \&catch_alrm;
+
+  # handle each request line one at a time 
+LINE:
+  while ($input_line = <$socket>) {
+    alarm(0);
+    $dt = `date`;
+    chomp $dt;
+    $lines_in++;
+    unless ( $input_line =~ /EOF/) {
+    # show input requests if in debug mode, but not EOF's
+      print "\n>> $prog(handle_socket_connection, $dt, $ip_addr):\n    $input_line" if ($opt_debug);
+    }
+    chomp $input_line;
+    my %kvhash = (); # new hash per line or record
+
+    # we are done with this session after 7 request lines or EOF from client
+    # this is just arbitrary, but I'm guessing the smaller the better
+    last LINE if ($input_line =~ /EOF/); 
+    if ($lines_in > 7) { 
+         $output_to_client->send("mythd: max requests (7) exceeded!\nEOD\n",
+    	   $send_flags) or die "Can't send: $!\n";
+      last LINE;
+    }
+
+    # verify input line length 
+    if (length($input_line) > 512) {
+       my $somestr = substr($input_line, 0, 20);
+       $output_to_client->send("err_msg:=line ($somestr ...) > 512 chars\nEOD\n",
+    	  $send_flags) or die "Can't send: $!\n";
+       next;	
+    }
+
+    # verify each input line starts with the id field 
+    unless ($input_line =~ /^id:=/) {
+       $output_to_client->send("err_msg:=format error in ($input_line)\nEOD\n",
+    	  $send_flags) or die "Can't send: $!\n";
+       next;	
+    }
+
+#    print "  >> $dt ($ip_addr) - $input_line\n";
+
+    # gather all the fields and dispatch the request
+    my @kvs = split(",", $input_line); 
+    my $alen = @kvs;
+    if ($alen  < 2) {
+       #print "$prog: ignore request -> $input_line\n";
+       next;
+    }
+    my $tmp;
+    foreach $tmp (@kvs) {
+       # if it's not a complete key value pair, skip this line 
+       my @kv = split(":=", $tmp);
+       if (@kv < 2) {
+         $output_to_client->send("err_msg:=invalid key and/or value in ($input_line)\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+	  next LINE;
+       }
+       # so build the hash with all the key value pairs present 
+       $kvhash{$kv[0]} = $kv[1];  
+    }
+    # make sure the required keys are present
+    if (!exists $kvhash{"id"}) {
+         $output_to_client->send("err_msg:=no ID key present in ($input_line)\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         next;
+    }
+    $id = $kvhash{"id"};
+
+    if (!exists $kvhash{"type"}) {
+         $output_to_client->send("err_msg:=no TYPE key present in ($input_line)\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         next;
+    }
+
+    # dispatch the requests
+    print "   $prog(handle_socket_connection): input validated, process - $input_line\n";
+
+    if ($kvhash{"type"} eq "STATUS_req") {
+       run_JOB_STATUS_REQUEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "HOST_STATUS_req") {
+       run_HOST_STATUS_REQUEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "RUN_TEST_req") {
+       run_TEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "KILL_TEST_req") {
+       run_KILL_TEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "ADD_TEST_req") {
+       run_ADD_TEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "COPY_TEST_req") {
+       run_COPY_TEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "DELETE_TEST_req") {
+       run_DELETE_TEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "ARCH_INFO_req") {
+       run_ARCH_INFO_REQUEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "GET_USER_GZGRPS_req") {
+       run_GET_USER_GZGRPS_REQUEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "TEST_INFO_req") {
+       run_TEST_INFO_REQUEST(\%kvhash, $output_to_client);
+    }
+    elsif ($kvhash{"type"} eq "PING_req") {
+         $output_to_client->send("id:=$id, type:=PONG_res\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         print "<< return PONG_res \n" if ($opt_debug);
+    }
+    else {
+         $output_to_client->send("id:=$id, err_msg:=unknown TYPE key ($kvhash{'type'})\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+    }
+  }
+  #finish the session
+#  print "$prog(handle_socket_connection): << EOF\n" if ($opt_debug);
+  $output_to_client->send("EOF\n", $send_flags) or die "Can't send: $!\n";
+  alarm(0);
+  close($socket);
+}
+
+#
+# Main loop waiting for requests from client(s)
+#
+  # spawn new thread that will handle finished jobs
+  my $thr = threads->new(\&process_complete_jobs);
+  $thr->detach; # it's off by itself now
+
+  # spawn new thread that will handle storing job
+  #  information of behalf of the requestor
+  $thr = threads->new(\&handle_namedpipe_requests);
+  $thr->detach; # it's off by itself now
+
+  while ($time_to_die == 0) {
+   if ($myth_client_socket = $listen->accept)  {
+        # each client session gets its own thread
+        $thr = threads->new(\&handle_socket_connection, $myth_client_socket);
+        $thr->detach;
+   }
+  }
+  # I've been killed, so cleanup and go away
+  unlink $MYTHPID;
+  untie %log_hash;
+  untie %active_jobs;
+  untie %active_groups;
+  exit;
+
+########################## mythd subroutines #####################
+
+sub handle_namedpipe_requests {
+
+  my $comm_pipe = "$ENV{'CPIPE'}";
+  my $fifo;
+
+  #create the fifo (a.k.a pipe)
+  if (! -e "$comm_pipe") {
+    `mkfifo --mode=664 "$comm_pipe"`;
+  }
+
+  my $pipe_in;
+  while ($time_to_die == 0) {
+
+    my %pkvhash = (); # new hash per input line
+
+    # open the pipe for reading
+    open($fifo, "<",  "$comm_pipe") or
+      die "Couldn't open $comm_pipe for reading: $!\n";
+
+     $pipe_in = (<$fifo>); # blocking read
+     next unless defined $pipe_in; 
+     chomp $pipe_in;
+
+     if (length($pipe_in) > 512) {
+       print "$prog(handle_namedpipe_requests): ERROR, input data exceeds 512 chars\n";
+       next;
+    }
+    # gather all the fields
+    undef $/;
+    my @pkvs = split(/, |,/m, $pipe_in);
+    my $kvlen = @pkvs;
+    if ($kvlen  < 2) {
+       print "$prog(handle_namedpipe_requests): ERROR, ivalid input -> $pipe_in\n";
+       next;
+    }
+    my $tmp;
+    foreach $tmp (@pkvs) {
+       # if it's not a complete key value pair, skip this line
+       my @pkv = split(":=", $tmp);
+       if (@pkv < 2) {
+          print "$prog(handle_namedpipe_requests): ERROR, invalid key value pair -> $pipe_in\n";
+          next;
+       }
+       # build the hash with all the key value pairs present
+       $pkvhash{$pkv[0]} = $pkv[1];
+    }
+
+    if (!exists $pkvhash{"type"}) {
+         print "$prog(handle_namedpipe_requests): ERROR, no type key -> $pipe_in\n";
+         next;
+    }
+
+    # now start dispatching the requests
+    print "\n>> $prog(handle_namedpipe_requests): $pipe_in\n" if ($opt_debug);
+
+    if ($pkvhash{"type"} eq "STORE_DATA_req") {
+      # do a bit of data checking first
+      if (!exists $pkvhash{"srcdir"}) {
+         print "$prog(handle_namedpipe_requests): ERROR, no srcdir key -> $pipe_in\n";
+         next;
+      }
+      if (!exists $pkvhash{"group"}) {
+         print "$prog(handle_namedpipe_requests): ERROR, no group key -> $pipe_in\n";
+         next;
+      }
+      store_results($pkvhash{"srcdir"},$pkvhash{"group"});
+    }
+
+
+
+   }
+   close $fifo;
+}
+
+
+sub process_complete_jobs {
+# look for jobs that are done running and move any output files where they need to go
+
+  my ($jobid,$stuff,$test,$outputdir,$workingdir,$targetdir);
+  my $drmfilename; 
+
+  # Go thru the active jobs every so often looking for completed ones
+  # and process the logs 
+  while ($time_to_die == 0) {
+
+   $stuff = "";
+
+   # check the DRM output of all active jobs.
+   # We can then parse these logs to find where the job put its output data. 
+   foreach $jobid ( keys %active_jobs ) {
+
+       # issue checkjob command to get current status of each jid
+       $stuff = `checkjob $jobid`;
+       chomp($stuff);
+
+       if ( $stuff =~ /Idle/ ) {
+          # job has been accepted by DRM and now waiting to launch
+          next;
+       } elsif ( $stuff =~ /Running/ ) {
+          # job is running
+          next;
+       } elsif  (( $stuff =~ /Completed/ ) ||
+	        ( $stuff =~ /Removed/ ) ||
+		( $stuff =~ /cannot locate/ ) ||
+		( $stuff =~ /Cancel/ ) ||
+		( "$stuff" eq "" ))
+       { # the job is now finished, well at least the scheduler is done with it 
+
+	 # find the name of the DRM output file
+         $drmfilename = undef; 
+          my @nl = `ls $DRMLogDir`;
+           foreach (@nl) {
+             if (/$jobid/) {
+               $drmfilename = $_;
+	       chomp $drmfilename;
+             }
+           }
+
+         unless (defined($drmfilename)) {
+	  # Hmm, at this point if scheduler thinks it's done with it, but there
+          # is no DRM output file, job is toast. Clean up and make a note. 
+
+	   print "WARNING: cleaning up old job id($jobid). No DRM file found\n";
+           delete $active_jobs{$jobid};   
+           delete $active_groups{$jobid};   
+	   next;
+         }
+
+         if ( -e "$DRMLogDir/$drmfilename") { 
+
+           # rumage through DRM output file looking for where runit put its logs
+	   my $line = `grep tld $DRMLogDir/$drmfilename`;
+	   chomp $line;
+print "$prog(process_complete_jobs): tld in DRM file: $line\n" if ($opt_debug);
+
+	   if ($line =~ /^tld -> (.*)/) {
+	       $workingdir = $1; 
+               my $tmp = basename($workingdir);
+               my @rtn = split('-', $tmp);
+               $targetdir = `$GAZHOME/bin/gz_glean -p -t $rtn[0] -g $active_groups{$jobid} -f $tmp`;
+               chomp $targetdir;
+
+               # move the DRM generated output files into the temporary working dir
+	       # so that they can be slurped up later with all the other log data 
+               system("mv -f $DRMLogDir/${jobid}.* $workingdir");
+	       system("chmod -R 750 $workingdir");
+
+               store_results($workingdir, $active_groups{$jobid});
+
+	       # save where the final log dir is for this test. If the job id is so old as to be
+	       # overwritten, so be it. The gazebo database is a better place to look anyway.
+               $log_hash{$jobid} = $targetdir;
+
+               # once the data has been moved and gleaned remove the entry from the active_jobs and 
+               # active groups hashes and clean up the temp working dir.
+               if (exists $active_jobs{$jobid}) {
+		 my $dir = dirname($active_jobs{$jobid});
+		 chomp $dir;
+                 print "  clean up ($dir) for job $jobid\n";
+		 system("rm -rf $dir");
+                 delete $active_jobs{$jobid};   
+                 delete $active_groups{$jobid};   
+	       }
+
+	   }
+	   else {
+	     print "Houston we have a problem, no log directory ptr found in $DRMLogDir/$drmfilename\n";
+	     # the job probably died, so save the DRM log somewhere where the web can find it.
+	     my $tmplogdir = "/opt/nfz/HPC/tmp/$jobid-logs"; 
+	     system("mkdir -p $tmplogdir\n"); 
+             $log_hash{$jobid} = $tmplogdir;
+             system("mv -f $DRMLogDir/${jobid}.* $tmplogdir\n");
+             print "$prog(process_complete_jobs): ERROR, saving data for jobid=$jobid to $tmplogdir \n";
+             if (exists $active_jobs{$jobid}) {
+               delete $active_jobs{$jobid};   
+               delete $active_groups{$jobid};   
+	     }
+           }
+         } else { # no DRM output files created yet, get it on the next go around
+               next;
+         }
+       }
+    }
+    sleep(20);
+  } # end while waiting to die loop
+} 
+
+# store test results into the database and the proper target directory
+sub store_results {
+
+  my $srcdir = shift;
+  my $group = shift;
+
+  my $tmp = basename($srcdir);
+  my @info = split(/_/, $tmp);
+  my $testName = $info[0];
+  my @rtn = split(/-/, $testName); 
+
+  my $destdir = `$GAZHOME/bin/gz_glean -p -t $rtn[0] -g $group -f $tmp`;
+  {
+   # for some reason this is needed to make chomp work when processing
+   # requests from the pipe. Why "$/" isn't set I have no idea??
+    local $/ = "\n";
+    chomp($destdir);
+  }
+  print "$prog(store_results): move all files from $tmp to $destdir\n" if ($opt_debug);
+
+  # glean the test results directory
+  # gz_glean expects a "-f" parameter of the form
+  # /.../testname-testexec_jobid_machine.date
+  #  such as:
+  #      .../.../hpl-runit_5368_yra.2006-12-03T13:24:41-0700
+  system("$GAZHOME/bin/gz_glean -t $rtn[0] -g $group -f $srcdir");
+  system("chgrp -R $group $destdir");
+  system("chmod -R 750 $destdir");
+
+  # save what's appropriate to the gazebo DB.
+  # The "dbi" file is placed in the result dir to indicate
+  # that the data has been stored to the DB.
+  if (( -e "$destdir/$testName.log") && ( ! -e "$destdir/dbi" )) {
+      my $result = `$GAZHOME/bin/mysql/storeresultsDBI -l $destdir/$testName.log`;
+      if ( $result =~ /success/ ) {
+        `touch $destdir/dbi`;
+      }
+  } else {
+    print "$prog(store_results): WARNING, no $destdir/$testName.log to store to DB!\n" if ($opt_debug);
+  }
+
+}
+
+
+# return what architecture and segments are supported by mythd.
+# values are defined in /var/gazebo/etc/mythd.conf
+sub run_ARCH_INFO_REQUEST  {
+  my $valhash = shift; # key/value pairs from client
+  my $cli = shift;
+
+   my $id = $$valhash{"id"};
+
+  # send back a list of all the compute segments this mythd can dispatch jobs on  
+  $cli->send("id:=$id, type:=ARCH_INFO_res, arch_name:=$ENV{'CN'}, seg_list:=$seg_list\nEOD\n",
+ 	$send_flags) or die "Can't send: $!\n";
+
+}
+
+# return what tests exist for this cluster name, architecture, and team name.
+sub run_TEST_INFO_REQUEST  {
+  my $valhash = shift; # key/value pairs from client
+  my $cli = shift;
+
+  my $id = $$valhash{"id"};
+  my $test_list = "";
+  my $team;
+  my @list;
+  my $testdir;
+
+  # check for necessary key values
+  if ((!exists $$valhash{"team"}) || (!defined $$valhash{"team"}) ) {
+         $cli->send("id:=$id, type:=TEST_INFO_res, err_msg:=no team value present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+  } else {
+    $team = $$valhash{"team"};
+    $testdir = "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team";
+  }
+
+  unless ( -R $testdir) {
+       $cli->send("id:=$id, type:=TEST_INFO_res, err_msg:=can't access $testdir\nEOD\n",
+               $send_flags) or die "Can't send: $!\n";
+       return;
+  }
+
+  @list = `ls $testdir | xargs`;
+  foreach (@list) {
+    $test_list .= "$_";
+  }
+  $test_list =~ s/ /,/g; 
+  chomp $test_list;
+
+  # send back a list of all the tests found in the test directory for this user
+  $cli->send("id:=$id, type:=TEST_INFO_res, test_list:=$test_list\nEOD\n",
+        $send_flags) or die "Can't send: $!\n";
+
+}
+
+# return what gz groups this users belongs to.
+sub run_GET_USER_GZGRPS_REQUEST  {
+  my $valhash = shift; # key/value pairs from client
+  my $cli = shift;
+
+  my $id = $$valhash{"id"};
+  my $user;
+
+    if (!exists $$valhash{"user"}) {
+         $cli->send("id:=$id, type:=GET_USER_GZGRPS_res, err_msg:=no USER key present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $user = $$valhash{"user"}; }
+
+
+#  my $grp_list = "";
+#  my $user;
+#  my $out = `grep $user /etc/group | grep gz | gawk -F: '{print \$1}' | xargs`;
+#  chomp $out;
+#  if ( $out eq "" ) {
+#    $out = "NONE";
+#  } else {
+#    $out  =~ s/ /,/g;
+#  }
+#
+
+my $cmd = "grep gz /etc/group";
+my $line = "";
+
+# typical response is "gzgazebo:!:5431:cwi,gazebo"
+
+if (open ( RJ,  "$cmd |" )) {
+   while ( <RJ> ) {
+      if ( $_ =~ /^gz/ ) { 
+         unless ( $_ =~ /$user/ ) { next; }
+         $_ =~ s/!://; # now it looks like "gzgazebo:5431:cwi,gazebo"
+         $_ =~ s/\d+://; # now it looks like "gzgazebo:cwi,gazebo" 
+         $_ =~ s/,/+/g; # now it looks like "gzgazebo:cwi+gazebo" 
+         $_ =~ s/\n/;/; 
+         #print "$_";
+         $line = $line . $_;
+      }
+   }
+}
+
+  # output is a comma separated list of gz group names
+  $cli->send("id:=$id, type:=GET_USER_GZGRPS_res, msg:=$line\nEOD\n",
+        $send_flags) or die "Can't send: $!\n";
+
+}
+
+
+# return the state of the compute nodes for each segment on this cluster 
+sub run_HOST_STATUS_REQUEST  {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+    my $id = $$valhash{"id"};
+
+    my $output = `$GAZHOME/bin/bhosts`; 
+    chomp $output;
+
+    print "<< return host status results: \n" if ($opt_debug);
+    print "$output\n" if ($opt_debug);
+
+  $cli->send("id:=$id, type:=HOST_STATUS_res, msg:=\n$output\nEOD\n",
+ 	$send_flags) or die "Can't send: $!\n";
+
+}
+
+# add a test to the test directory. 
+# users are allowed to add a test to EITHER a group they are in
+# or the gzshared group.
+# gazebo must be a part of all groups
+sub run_ADD_TEST  {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+    my $id = $$valhash{"id"};
+    my $testName;
+    my $team;
+    my $user;
+    my $output;
+
+    # check for necessary key values
+    if (!exists $$valhash{"team"}) {
+         $cli->send("id:=$id, type:=ADD_TEST_res, err_msg:=no TEAM key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $team = $$valhash{"team"}; }
+
+    if (!exists $$valhash{"test_name"}) {
+         $cli->send("id:=$id, type:=ADD_TEST_res, err_msg:=no TEST_NAME key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $testName = $$valhash{"test_name"}; }
+
+    if (!exists $$valhash{"user"}) {
+         $cli->send("id:=$id, type:=ADD_TEST_res, err_msg:=no USER key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $user = $$valhash{"user"}; }
+
+    # make sure user is in this group, unless gzshared, then let em on.
+    unless ( $team eq "gzshared") { 
+      unless (`$ENV{'GAZHOME'}/bin/gazebo_listgrp -u $user -g $team`) {
+        $cli->send("id:=$id, type:=ADD_TEST_res, err_msg:=user $user is not part of $team\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+           return;
+      }
+    }
+
+    # make sure gazebo is in this group/team
+    unless (`$ENV{'GAZHOME'}/bin/gazebo_listgrp -u gazebo -g $team`) {
+      $cli->send("id:=$id, type:=ADD_TEST_res, err_msg:=user gazebo is not part of the $team team\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    # make sure the test doesn't already exist 
+    if ( -d "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName" ) {
+      $cli->send("id:=$id, type:=ADD_TEST_res, err_msg:=$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName exists\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    print "  request to create $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName\n" if ($opt_debug);
+
+    # otherwise, set up the directories and template files 
+    system("mkdir -p $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName");
+    system("cp $ENV{'GAZHOME'}/include/config.example $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName/config.example");
+    system("cp $ENV{'GAZHOME'}/include/makeit.example $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName/makeit.example");
+    system("cp $ENV{'GAZHOME'}/include/runit.example $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName/runit.example");
+    system("cp $ENV{'GAZHOME'}/docs/howto-add-tests.txt $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName/README");
+    system("cp $ENV{'GAZHOME'}/docs/TrendData.txt $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName/TrendData.txt");
+    sleep(1);
+    system(qq(chgrp -R $team "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName"));
+    if ( $team eq "gzshared" ) {
+      system(qq(chmod -R 775 "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName"));
+    } else {
+      system(qq(chmod -R 770 "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName"));
+    }
+    system(qq(chmod g+s "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName"));
+    system(qq(chmod 664 "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName/config.example"));
+
+    if ( -R "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName") { 
+      $output = "success, $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName created"; 
+    } else {
+      $output = "failure, $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName not created, see the Gazebo admin"; 
+    }
+    print "$output\n" if ($opt_debug);
+
+    $cli->send("id:=$id, type:=ADD_TEST_res, msg:=$output\nEOD\n",
+ 	$send_flags) or die "Can't send: $!\n";
+
+}
+
+# copy a test
+# the same rules exist for adding a test
+# in addtion to the users having to be in the src group and the dest group 
+sub run_COPY_TEST  {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+    my $id = $$valhash{"id"};
+    my $testName;
+    my $destName;
+    my $srcTeam;
+    my $destTeam;
+    my $user;
+    my $output;
+    our $name;
+    our $allFilesReadable;
+
+    # check for necessary key values
+    if (!exists $$valhash{"src_team"}) {
+         $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=no source TEAM key present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $srcTeam = $$valhash{"src_team"}; }
+
+    if (!exists $$valhash{"dest_team"}) {
+         $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=no destination TEAM key present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $destTeam = $$valhash{"dest_team"}; }
+
+    if (!exists $$valhash{"test_name"}) {
+         $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=no TEST_NAME key present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $testName = $$valhash{"test_name"}; }
+
+    if (!exists $$valhash{"user"}) {
+         $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=no USER key present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $user = $$valhash{"user"}; }
+
+    if (!exists $$valhash{"dup_name"}) {
+         $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=no destination name (dup_name) present\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $destName = $$valhash{"dup_name"}; }
+
+    # make sure the user is part of the source group/team, unless gzshared, then let em on.
+    unless ( $srcTeam eq "gzshared") {
+      unless (`$ENV{'GAZHOME'}/bin/gazebo_listgrp -u $user -g $srcTeam`) {
+        $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=user $user is not part of $srcTeam\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+           return;
+      }
+    }
+
+    # make sure the user is part of the destination group/team, unless gzshared, then let em on.
+    unless ( $destTeam eq "gzshared") {
+      unless (`$ENV{'GAZHOME'}/bin/gazebo_listgrp -u $user -g $destTeam`) {
+        $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=user $user is not part of $destTeam\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+           return;
+      }
+    }
+
+    # make sure gazebo is in this destination group/team
+    unless (`$ENV{'GAZHOME'}/bin/gazebo_listgrp -u gazebo -g $destTeam`) {
+      $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=user gazebo is not part of the $destTeam team\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    # make sure the source test directory exists
+    unless ( -d "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$srcTeam/$testName" ) {
+      $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=$ENV{'TESTHOME'}/$ENV{'ARCH'}/$srcTeam/$testName doesn't exist\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    # make sure all the files in source directory are readable
+    @ARGV =  ("$ENV{'TESTHOME'}/$ENV{'ARCH'}/$srcTeam/$testName");
+    $allFilesReadable = 1;
+    sub perm {
+      unless (-R $_ ) {
+        $allFilesReadable = 0;
+        return;
+     }
+     $name = $File::Find::name;
+    }
+    find(\&perm, @ARGV);
+    unless ($allFilesReadable) {
+        $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=ERROR: Gazebo does not have read permission on
+all files in src directory, no copy done\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+           return;
+      }
+
+    # make sure the target directory name does not already exist
+    if ( -d "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName" ) {
+      $cli->send("id:=$id, type:=COPY_TEST_res, err_msg:=$ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName already exists\nEOD\n",
+                $send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    # otherwise, duplicate the sucker 
+    system(qq(mkdir -p "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName"));
+    system("cp -R $ENV{'TESTHOME'}/$ENV{'ARCH'}/$srcTeam/$testName/* $ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName");
+    system("chgrp -R $destTeam $ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName");
+    if ( $destTeam eq "gzshared" ) {
+      system("chmod -R 775 $ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName");
+    } else {
+      system("chmod -R 770 $ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName");
+    }
+    sleep(1);
+    system(qq(chmod g+s "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName"));
+    system(qq(chmod 664 "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName/config"));
+
+    if ( -R "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName") { 
+      $output = "success, $ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName created"; 
+    } else {
+      $output = "failure, $ENV{'TESTHOME'}/$ENV{'ARCH'}/$destTeam/$destName not created, see the Gazebo admin"; 
+    }
+    print "$output\n" if ($opt_debug);
+
+    $cli->send("id:=$id, type:=COPY_TEST_res, msg:=$output\nEOD\n",
+        $send_flags) or die "Can't send: $!\n";
+}
+
+
+
+# delete a test from the test directory 
+sub run_DELETE_TEST  {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+    my $id = $$valhash{"id"};
+    my $testName;
+    my $team;
+    my $user;
+    my $output;
+
+    # check for necessary key values
+    if (!exists $$valhash{"team"}) {
+         $cli->send("id:=$id, type:=DELETE_TEST_res, err_msg:=no TEAM key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { 
+	$team = $$valhash{"team"};
+    }
+
+    if (!exists $$valhash{"test_name"}) {
+         $cli->send("id:=$id, type:=DELETE_TEST_res, err_msg:=no TEST_NAME key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $testName = $$valhash{"test_name"}; }
+
+    if (!exists $$valhash{"user"}) {
+         $cli->send("id:=$id, type:=DELETE_TEST_res, err_msg:=no USER key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $user = $$valhash{"user"}; }
+
+    # make sure user is in this group
+    unless (`$ENV{'GAZHOME'}/bin/gazebo_listgrp -u $user -g $team`) {
+      $cli->send("id:=$id, type:=DELETE_TEST_res, err_msg:=user $user is not part of $team\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    # make sure the test directory exists 
+    unless ( -d "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName" ) {
+      $cli->send("id:=$id, type:=DELETE_TEST_res, err_msg:=$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName doesn't exist\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    # remove the sucker, very scary
+    # even with authentication
+    system("rm -rf $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName");
+
+    # remove links also 
+    unless ( $team eq "gzshared") {
+	if ( -l "$ENV{'TESTHOME'}/$ENV{'ARCH'}/gzshared/$testName") {
+          system("rm -rf $ENV{'TESTHOME'}/$ENV{'ARCH'}/gzshared/$testName");
+        }
+    }
+
+    $output = "$testName deleted"; 
+    print "  $output\n" if ($opt_debug);
+
+    $cli->send("id:=$id, type:=DELETE_TEST_res, msg:=$output\nEOD\n",
+ 	$send_flags) or die "Can't send: $!\n";
+
+}
+
+
+
+# Invoke the gzrun program to run this test
+sub run_TEST  {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+    my $targetSeg;
+    my $npes;
+    my $testName;
+    my $id = $$valhash{"id"};
+    my $cmd;
+    my $minutes_req;
+    my $mailto;
+    my $params;
+    my $team;
+
+    # check for necessary key values
+    if (!exists $$valhash{"team"}) {
+         $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=no TEAM key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { 
+	$team = $$valhash{"team"};
+    }
+
+    # check for necessary key values
+    if (!exists $$valhash{"test_name"}) {
+         $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=no TEST_NAME key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    else { $testName = $$valhash{"test_name"}; }
+
+#print "debug: looking for test in $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName\n" if ($opt_debug);
+
+    unless ( -d "$ENV{'TESTHOME'}/$ENV{'ARCH'}/$team/$testName" ) {
+     $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=no $testName found in $ENV{'TESTHOME'}/$ENV{'ARCH'}/$team\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    if (!exists $$valhash{"seg_name"}) {
+         $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=no SEG_NAME key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    $targetSeg = $$valhash{"seg_name"};
+
+ 
+    unless ( $seg_list =~ /$targetSeg/ ) { 
+         $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=invalid segment name -> $targetSeg\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+
+    if (!exists $$valhash{"pe_cnt"}) {
+         $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=no PE_CNT key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    $npes = $$valhash{"pe_cnt"};
+
+    if (!exists $$valhash{"time_lim"}) {
+         $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=no TIME_LIM key present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+    }
+    my @tmp_tl = split(/:/, $$valhash{"time_lim"});
+    $minutes_req = ($tmp_tl[0] * 60) + $tmp_tl[1];
+
+    # submit single test request to gzrun
+    # expect back job id (jid) 
+    unless (-e $DRMLogDir) {
+       system("mkdir -p $DRMLogDir");
+    }
+
+    $cmd = "$GAZHOME/bin/gzrun -b -g $team -n " . $npes . " -W " . $minutes_req .
+         " -o " . $DRMLogDir . 
+         " -t " .  "$testName" . 
+	 " -m " . $targetSeg;  
+
+    if (exists $$valhash{"mail"}) {
+      $mailto = $$valhash{"mail"};
+      $cmd .= " -p " . $mailto;
+    }
+    if (exists $$valhash{"params"}) {
+      $params = $$valhash{"params"};
+      $cmd .= qq( -P "$params");
+    }
+
+    print "  - run $cmd\n";
+
+    my $jobId;
+    undef $jobId;
+    my $qsub_msg;
+    undef $qsub_msg;
+    my $error_msg;
+    undef $error_msg;
+    my $msg;
+    my $work_dir;
+    undef $work_dir;
+
+    if (open( RJ,  "$cmd |" )) {
+      while ( <RJ> ) {
+          $work_dir = $1 if /working directory: (.*)/;
+          $jobId = $1 if /jid:=(\d+)/;
+          if (/error:/) {
+            $error_msg = $_;
+            last;
+          }
+          if (/qsub:/) {
+	    $qsub_msg = $_;
+	    last;
+	  }
+      }
+    }
+    close (RJ);
+
+    # if the jobID is defined then we probably got a good run
+    if (defined($jobId)) {
+      chomp $jobId;
+      print "  - job id for request id $id -> $jobId\n";
+      print "debug: DRM log dir for job $jobId -> $DRMLogDir\n" if ($opt_debug);
+      print "<< id:=$id, type:=RUN_TEST_res, job_id:=$jobId\n" if ($opt_debug);
+      $cli->send("id:=$id, type:=RUN_TEST_res, job_id:=$jobId\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+      # mark the job as an active job and save where its temporary working dir is located 
+      chomp $work_dir;
+      print "  - twd for job $jobId -> $work_dir\n";
+      $active_jobs{$jobId} = $work_dir;
+      $active_groups{$jobId} = $team;
+      return;
+
+    } elsif (defined($qsub_msg)) {
+	$msg = $qsub_msg;
+    } elsif (defined($error_msg)) {
+	$msg = $error_msg;
+    } else {
+        $msg = "FAIL: job did not run";
+    }
+    print "<< id:=$id, type:=RUN_TEST_res, err_msg:=$msg\n" if ($opt_debug);
+    $cli->send("id:=$id, type:=RUN_TEST_res, err_msg:=$msg\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+}
+
+# kill the job identified by job id
+sub run_KILL_TEST {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+  my $jid;
+  my $id = $$valhash{"id"};
+
+  # check for necessary key values
+  if ((!exists $$valhash{"job_id"}) || (!defined $$valhash{"job_id"}) ) {
+         $cli->send("id:=$id, type:=KILL_TEST_res, err_msg:=no JOB_ID value present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+  }
+  $jid = $$valhash{"job_id"};
+
+  # check for a valid job id. It should be all digits
+  if ( $jid =~ /[^0-9]/ ) {
+       $cli->send("id:=$id, type:=KILL_TEST_res, err_msg:= ($jid) not a valid job id\nEOD\n",
+          $send_flags) or die "Can't send: $!\n";
+       return;
+  }
+
+  my $result = "";
+
+  if (exists $active_jobs{$jid}) {
+    my $where_is_it = `which bkill`;
+    chomp $where_is_it;
+    if (-x "$where_is_it") { 
+      my $cmd = "$where_is_it " . $jid;  
+      print "$prog: run: $cmd \n";
+      $result = `$cmd`;
+      chomp $result;
+    } else {
+        $cli->send("id:=$id, type:=KILL_TEST_res, msg:=job not removed, no bkill command found\nEOD\n",
+            $send_flags) or die "Can't send: $!\n";
+        return;
+    }
+  } else {
+    $cli->send("id:=$id, type:=KILL_TEST_res, msg:=no job id $jid found\nEOD\n",
+        $send_flags) or die "Can't send: $!\n";
+    return;
+  }
+
+  # flush from hashes
+  if (exists $log_hash{$jid}) {
+    delete $log_hash{$jid};   
+  }
+  if (exists $active_jobs{$jid}) {
+    my $dir = dirname($active_jobs{$jid});
+    chomp $dir;
+    system("rm -rf $dir");
+    delete $active_jobs{$jid};   
+    delete $active_groups{$jid};   
+  }
+
+  $cli->send("id:=$id, type:=KILL_TEST_res, msg:=$result\nEOD\n",
+        $send_flags) or die "Can't send: $!\n";
+}
+     
+# This routine just sends back what the scheduler knows about the job
+sub run_JOB_STATUS_REQUEST {
+    my $valhash = shift; # key/value pairs from client
+    my $cli = shift;
+
+  my $jid;
+  my $id = $$valhash{"id"};
+
+  # check for necessary key values
+  if ( (!exists $$valhash{"job_id"}) || (!defined $$valhash{"job_id"}) ) {
+         $cli->send("id:=$id, type:=STATUS_res, err_msg:=no JOB_ID value present\nEOD\n",
+	 	$send_flags) or die "Can't send: $!\n";
+         return;
+  }
+  $jid = $$valhash{"job_id"};
+
+  # check for a valid job id. It should be all digits 
+  if ( $jid =~ /[^0-9]/ ) {
+       $cli->send("id:=$id, type:=STATUS_res, err_msg:= ($jid) not a valid job id\nEOD\n",
+   	  $send_flags) or die "Can't send: $!\n";
+       return;
+  }
+
+  # initialize response
+  our $result;
+  $result = "UNKNOWN, No data found for Job Id: " . "$jid";
+
+  # if it's finished, then the log_hash will exist 
+  if (exists $log_hash{$jid}) {
+      $result = $log_hash{$jid};
+      $result = "COMPLETE, " . $result;
+  }
+  else {
+  # find out what the scheduler might know
+    my $cmd = `which qstat`;
+    chomp $cmd;
+      if (-x "$cmd") { 
+         $cmd = $cmd . " -a ";  
+         my @tmp = `$cmd`;  
+	 foreach (@tmp) {
+	   if (/$jid/) {
+            $result = $_;
+	    chomp $result;
+            $result = "ACTIVE, " . $result;
+	   }
+         }
+      }
+  }
+
+  print "<< id:=$id, type:=STATUS_res, msg:=$result\n" if ($opt_debug);
+  $cli->send("id:=$id, type:=STATUS_res, msg:=$result\nEOD\n",
+        $send_flags) or die "Can't send: $!\n";
+}
+
+
+# make sure there is only one of me running
+# if no pid file exists guess not 
+sub justme {
+   if (open MYTH, $MYTHPID) {
+      my $pid;
+      chop($pid = <MYTH>);
+      kill HUP => $pid; # kill the old sucker now!
+      close MYTH;
+      sleep(3);
+   }
+}
+
+
+# Documentation
+
+=head1 NAME
+
+B<mythd> - MY Test Harness handler. Component of the Gazebo project.
+
+Handles test requests recieved using the MY Test Harness protocol (MYTHP) 
+
+execute on front-end of any cluster
+
+=head1 SYNOPSIS
+
+B<mythd> [B<-h>] [B<--man>] [B<-f>] [B<-d>]
+
+B<mythd> [B<--config> I<conf>]
+
+=head1 DESCRIPTION
+
+B<mythd> version 2.0 listens on a Internet Domain socket waiting
+for a pre-defined
+set of request types. All the request types are related to running test
+software on various linux based HPC clusters. See the section below entitled
+B<MYTH Protocol> for the syntax rules of these requests.  For each request,
+the reqested action is processed.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h,--help>
+
+Show command usage and exit
+
+=item B<-f,--fresh>
+
+Clear any saved job_id-to-log file mappings and start fresh.
+
+=item B<-d>
+
+Add extended debugging information to the log file.
+
+=item B<--man>
+
+Print the mythd(1) manpage and exit.
+
+=item B<-c,--config> I<conf>
+
+Use specified configuration file I<conf> (default: F</var/gazebo/etc/mythd.conf>).  See the
+man section entitled B<CONFIGURATION FILE> for explaination of entries. 
+
+=back
+
+=head1 CONFIGURATION FILE
+
+ $ENV{'CN'}='roadrunner'; //cluster name
+ $ENV{'ARCH'}='x86_64 or i386 or ppc'; //system architecture type
+ $ENV{'TESTHOME'}="/opt/nfz/HPC/test_exec/".$ENV{'CN'}; // test executables 
+ $ENV{'GAZHOME'}="/users/gazebo"; // Gazebo install dir
+ $ENV{'TEST_QUE'}="testupq"; // gazebo test queue
+ $ENV{'PATH'} = $ENV{PATH} . ":" . ${'HOME'}; // path to search for binaries 
+ $ENV{'CPIPE'}="/tmp/myth_comm.pipe"; // myth communications named pipe
+
+
+The contents of the configuration file I<must> be in the form of executable
+perl(1) code, as B<mythd> simply "requires" it at the beginning of its
+execution (see perlfunc(1)).
+
+=head2 MYTH Port
+
+Defines the port number the B<mythd> service listens on 
+
+$ENV{'MYTHPORT'}='7474';
+
+=head2 Cluster Specification
+
+Defines the name of the cluster that B<mythd> is controlling.  
+
+=head2 Return Code
+
+In order for the configuration file to be "required" by perl(1), it I<must>
+return success!  Simply placing the following line at the end of the
+configuration file will suffice:
+
+  1;						# return success
+
+=head1 MYTH Protocol 
+
+Client Request (one request per line, comma seperated key value pairs, 512 chars max):
+
+ - required on each request line 
+ id:=<string>, type:=<string>
+
+ - other entries on each request line. See request types below. 
+ target_file_sys:=<string>
+ test_name:=<string>
+ pe_cnt:=<num>
+ time_lim:=<HH:MM>
+ seg_name:=<string>
+
+ - final line should be "EOF", max requests per session 7 
+ - session ended with "EOF"
+
+Server Response:
+
+ - Each complete response ends with "EOD" on a new line.
+ - Session completed with "EOF" on a new line. 
+
+
+=head2 Run Test Request
+
+ req:
+    id:=<string>, type:=RUN_TEST_req, uname:=<string>, team:=<string>, seg_name:=<string>, test_name:=<string>, pe_cnt:=<num>, time_lim:=<HH:MM> ,[mail:=<string>], [params:=<string>]
+    
+ response:
+    id:=<string>, type:=RUN_TEST_res, job_id:=<num>, log_dir:=<string>
+    or
+    id:=<string>, type:=RUN_TEST_res, err_msg:=<string>
+
+=head2 Kill Test Request
+
+ req:
+     id:=<string>, type:=KILL_TEST_req, job_id:=<num>, uname:=<string>, team:=<string>
+         
+ response:
+     id:=<string>, type:=KILL_TEST_res, msg:=job id <num> killed
+     or
+     id:=<string>, type:=KILL_TEST_res, err_msg:=<string>
+
+=head2 Status Request
+
+ # querey the status of a former run test request
+
+ req:
+    id:=<string>, type:=STATUS_req, job_id:=<string>, uname:=<string>, team:=<string>
+
+ response:
+    id:=<string>, type:=STATUS_res, msg:=<string>
+    
+    response messages are one of:
+      a) "no data found for job id <#>"
+      b) "<response string from system scheduler>"
+    or
+    id:=<string>, type:=STATUS_res, err_msg:=<string>
+
+
+=head2 Segment and Architecture Information Query 
+
+  # find out what machine architecture and segments are supported
+
+ req:
+    id:=<string>, type:=ARCH_INFO_req
+
+ response:
+    id:=<string>, type:=ARCH_INFO_res, arch_name:=<string>,
+    		seg_list:=<string>,<string>, ...
+    or
+    id:=<string>, type:=ARCH_INFO_res, err_msg:=<string>
+
+=head2 Test Information Query
+
+  # find out what tests are supported
+
+ req:
+    id:=<string>, type:=TEST_INFO_req, uname:=<string>, team:=<string>
+
+ response:
+    id:=<string>, type:=TEST_INFO_res, test_list:=<string>,<string>, ...
+    or
+    id:=<string>, type:=TEST_INFO_res, err_msg:=<string>
+
+
+=head2 Add Test Request 
+
+  # Add a test to the test directory and include necessary template files to the test structure 
+
+ req:
+    id:=<string>, type:=ADD_TEST_req, user:=<string>, team:=<string>, test_name:=<string>
+
+ response:
+    id:=<string>, type:=ADD_TEST_res, msg:=<".../team/test_name created">
+    or
+    id:=<string>, type:=ADD_TEST_res, err_msg:=<string>
+
+=head2 Delete Test Request
+
+  # Delete a test from the test directory
+
+ req:
+    id:=<string>, type:=DELETE_TEST_req, user:=<string>, team:=<string>, test_name:=<string>
+
+ response:
+    id:=<string>, type:=DELETE_TEST_res, msg:=<test_name deleted> 
+    or
+    id:=<string>, type:=DELETE_TEST_res, err_msg:=<string>
+
+=head2 Copy Test Request
+
+  # Copy a test from the one test team directory to another
+
+ req:
+    id:=<string>, type:=COPY_TEST_req, user:=<string>, src_team:=<string>, dest_team:=<string>, test_name:=<string>, dup_name:=<string>
+
+ response:
+    id:=<string>, type:=COPY_TEST_res, msg:=<".../team/test_name created"> 
+    or
+    id:=<string>, type:=COPY_TEST_res, err_msg:=<string>
+
+
+
+
+=head2 Segment Host Status Querey 
+
+  # find out the status of the compute nodes on all segments 
+
+ req:
+    id:=<string>, type:=HOST_STATUS_req
+
+ response:
+    id:=<string>, type:=HOST_STATUS_res, msg:=
+    <string>
+    <string>
+    .
+    .
+    .
+ 
+   # multiple output lines 
+
+=head2 Ping Request
+
+ # are you alive  
+
+ req:
+    id:=<string>, type:=PING_req
+
+ response:
+    id:=<string>, type:=PONG_res
+    or
+    id:=<string>, type:=PONG_res, err_msg:=<string>
+
+
+=head1 SIGNAL HANDLING
+
+B<mythd> will catch the following list of fatal signals and terminate
+gracefully: F<SIGINT>, F<SIGHUP>, and F<SIGTERM>.  B<mythd> will ignore
+F<SIGCHLD>.
+
+=head1 FILES
+
+F</var/gazebo/etc/mythd.conf>, F</var/gazebo/etc/gazebo.conf>, F</var/gazebo/log/mythd.log>, F</var/gazebo/log/mythd.pid>
+
+=head1 Future Plans 
+
+incorporate CBENCH and improve distribution techniques 
+
+=head1 SEE ALSO
+
+perl(1), perlfunc(1), perlretut(1), perlref(1)
+
+=head1 AUTHOR
+
+Craig W. Idler  <cwi@lanl.gov>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2007 by Craig W. Idler 
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+This program has been approved for release from Los Alamos National
+Laboratory by LA-CC Number 04-041, and authored by an employee of the
+University of California, operator of the Los Alamos National Laboratory
+under Contract No. W-7405-ENG-36 with the U.S. Department of Energy.
+
+=cut

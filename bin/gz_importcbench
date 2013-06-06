@@ -1,0 +1,352 @@
+#!/usr/bin/perl
+
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+
+# gz_importcbench - imports cbench tests for use with native Gazebo
+#   Get cbench tarball and provide the full path and filename as the first
+#   argument and the maximum number of processors as the second argument.
+#   this script.  This script will create several temporary directories in the
+#   process of importing cbench, which it will then delete leaving only final
+#   product in the Gazebo/test_exec and Gazebo/submit_configs directories.
+#   This process will require a fair amount of disk space, so please begin 
+#   in a suitable directory and/or file system.
+
+
+use File::Basename;
+
+
+# check that the second argument exists and is valid
+if (!($ARGV[1] =~ /^-?\d+$/) || $ARGV[1] >= 5001) { 
+    &user_error("Second argument must be the maximum number of processors and be <= 5000"); 
+}
+$maxprocs = $ARGV[1];
+
+# get path and filename from first argument
+@tbpf = split (/\//, $ARGV[0]);
+$tarballfile = pop @tbpf; # e.g. tarball name: cbench_release_1.1.5.tar.gz
+$tbpath = "/";
+foreach $dir (@tbpf) {
+    if ($dir) { $tbpath .= "$dir/"; }
+}
+chop $tbpath; # throw away last "/"
+$cbver = $tarballfile; $cbver =~ s/cbench_release_//g; 
+$cbver =~ s/.tgz//g; $cbver =~ s/.tar.gz//g;  # e.g. 1.1.5
+$cbdir = "cbench-$cbver";
+$cbhome = "$tbpath/$cbdir";
+
+# check directory name availability and exit with error if unavailable
+if (-e "$cbhome") { &user_error("$cbhome already exists.  Please move or delete to continue..."); }   #cmt
+
+# create new directory and expand tarball in it
+print "Creating directory $cbhome\nExpanding $tarballfile in $cbhome ...\n";
+`mkdir $cbhome; cd $cbhome; tar -xzf $ARGV[0]`;   #cmt
+
+# set new CBENCHOME environment variable
+$ENV{CBENCHOME}="$cbhome";
+
+# edit cbench-1.1.5/cluster.def using gazebo.conf
+print "Updating $cbhome/cluster.def with parameters gleaned from $ENV{'GZHOME'}/gazebo.conf ...\n";
+$CS = `grep "^Cluster_Segment_" $ENV{'GZHOME'}/gazebo.conf`;  # e.g. Cluster_Segment_rrz cu13,139,8,16
+($csname, $csspecs) = split (/ /, $CS);
+($cu, $maxnodes, $pepernode, $gbmempernode) = split (/,/, $csspecs);
+$mempernode = ($gbmempernode * 1024);
+
+# open cluster.def and read line by line, making substitutions
+$tmpfile = "./gztmpfile";
+if (-e $tmpfile) { `rm $tmpfile`; }
+$cdfile = "$cbhome/cluster.def";
+
+open(CDFILE, "< $cdfile");
+@cdlines = <CDFILE>;
+close(CDFILE);
+
+open(TMPFILE, ">$tmpfile");
+foreach $cdline (@cdlines) {
+    chomp $cdline;
+    if ($cdline =~ "^.max_nodes = ") {
+        $line = "\$max_nodes = $maxnodes;";
+    } elsif ($cdline =~ "^.procs_per_node = ") {
+        $line = "\$procs_per_node = $pepernode;";
+    } elsif ($cdline =~ "^.memory_per_node = ") {
+        $line = "\$memory_per_node = $mempernode;";
+    } else {
+        $line = $cdline;
+    }
+    $cdline =~ s/mpiexec/mpirun/g;
+    print TMPFILE "$line\n";
+}
+close(TMPFILE);
+`mv $tmpfile $cdfile`;
+
+# edit cbench-1.1.5/make.def file to use the correct BUILD_PATH - need to add "ib"
+print "Updating $cbhome/make.def with correct MPI bin path ...\n";
+$tmpfile = "./gztmpfile";
+if (-e $tmpfile) { `rm $tmpfile`; }
+$mdfile = "$cbhome/make.def";
+
+open(MDFILE, "< $mdfile");
+@mdlines = <MDFILE>;
+close(MDFILE);
+
+open(TMPFILE, ">$tmpfile");
+foreach $mdline (@mdlines) {
+    chomp $mdline;
+    $mdline =~ s/\(MPICH\)\/bin/\(MPICH\)\/ib\/bin/g;
+    print TMPFILE "$mdline\n";
+}
+close(TMPFILE);
+`mv $tmpfile $mdfile`;
+
+# load module openmpi-gcc/1.3
+`module load openmpi-gcc/1.3`;
+
+# set environment variables, note MPIHOME set by loading module
+$ENV{CBENCHTEST}="$tbpath/cbench_tests";
+$ENV{COMPILERCOLLECTION}="gcc";
+$ENV{RPATH}="/usr/lib";
+$ENV{BLASLIB}="-Wl,-rpath,$RPATH -L$RPATH -llapack -lm";
+
+# make installtests
+print "Running make installtests ...\n";
+`cd $cbhome; make installtests`;   #cmt
+
+# generate tests using <test>_gen_jobs.pl
+$ident = "$maxprocs" . "p_run1";
+for $testcategory ("bandwidth","collective","hpcc","io","iosanity","latency","linpack","mpioverhead","mpisanity","nodehwtest","npb","rotate") {
+    print "Generating $testcategory test cases ...\n";
+    $genjobs = "$testcategory" . "_gen_jobs.pl";
+    if ($testcategory eq "nodehwtest") {
+        `cd $ENV{'CBENCHTEST'}/$testcategory; ./$genjobs --ident  $ident`;
+    } else {
+        `cd $ENV{'CBENCHTEST'}/$testcategory; ./$genjobs --ident  $ident --maxprocs $maxprocs`;
+    }
+}
+
+# make a list of subdirectories that we just generated via *gen_jobs.pl
+@identdirs = split (/\n/, `find $ENV{'CBENCHTEST'} -name $ident`);
+@testdirs = "";                   # this is valid list of newly created testdirs
+foreach $identdir (@identdirs) {  #   e.g. /users/eed/cbench_tests/bandwidth/4p_run1/beff-1ppn-1 ...
+    if ($identdir) {              # these are the new directory groups
+        chomp $identdir;          #   e.g. /users/eed/cbench_tests/bandwidth/4p_run1
+        @sd = split (/\n/, `ls -1 $identdir`);
+        foreach $subdir (@sd) {
+            chomp $subdir;
+            $newdir = "$identdir/$subdir";  # full path
+            push (@testdirs, $newdir);
+        }
+    }
+}
+
+#*************** begin config template ******************
+$config_template = q~# Gazebo global test configuration file
+#
+# This file is used by both web cgi-scripts and acceptance testing scripts
+# It should be copied to the test directory and edited appropriately
+
+# Name of test owner (person to contact about this test)
+$test_config{'AUTHOR'} = "sedauthor";
+
+# Very simple one-line description of what this test is/does
+$test_config{'DESCRIPTION'} = "seddescription";
+
+# what version is the test
+$test_config{'VERSION'} = "sedversion";
+
+# what compiler is used to build this test
+$test_config{'COMPILER'} = "sedcompiler";
+
+# what MPI is used to run this test
+$test_config{'MPILIB'} = "sedmpilib";
+
+# Specific job size limitations when a test only supports npes of this size. Null means any size.
+# Enter sizes as a comma-separated list
+$test_config{'JOBSIZE'} = "sedjobsize";
+
+# Default job size in number of processors
+$test_config{'NPES'} = "sednpes";
+
+# Default time limit in hours:minutes:seconds
+$test_config{'TIMELIMIT'} = "sedtimelimit";
+
+# Target working directory where test will be moved to before execution.
+# This needs to be a directory that is shared globally across all the
+# compute nodes including the host where the test is launched.
+# A null value will place the test files in the user home space.
+# Only change this value if you want the test to run from some other directory.
+$test_config{'TARGET_WD'} = "sedtarget_wd";
+
+# Optional test parameters
+# Arbitrary string that contains anything you need to pass to the test executable.
+$test_config{'TEST_PARAMS'} = "sedtest_params";
+
+# name of file containing test execution command(s)
+$test_config{'CMD'} = "sedcmd";
+
+# Labels for the trend data values selected
+@legend = ( );
+
+# End of Configurations
+
+# add links to executables to all subdirectories
+
+# copy subdirectories to $GZHOME/test_exec~;
+#*************** end config template ******************
+
+
+# read cbench *pbs and *sh files to update config file
+$datetag = `date +%H%M%S`;  # e.g. 104404
+$new_scfile = "$ENV{GZHOME}/submit_configs/test_config_$datetag";
+`touch $new_scfile`;
+
+foreach $testdir (@testdirs) {  # e.g.  /users/eed/cbench_tests/bandwidth/4p_run1/beff-1ppn-1
+    $new_config_file = $config_template;
+    $pbsnumprocs = "";
+    $pbswalltime = "";
+    if ($testdir) {
+        # grep out number of processors from *pbs file
+        ($junk, $pbsnumprocs) = split (/numprocs: /, `grep " numprocs: " $testdir/*.pbs`);
+        $pbsnumprocs =~ s/^d//g; $pbsnumprocs =~ s/"//g; chomp $pbsnumprocs;
+
+        # grep out walltime from *pbs file
+        ($junk, $pbswalltime) = split (/ walltime=/, `grep " walltime=" $testdir/*.pbs`);
+        chomp $pbswalltime;
+
+        # grep out run command *sh file
+        $shruncmd = `grep '^CMD="' $testdir/*.sh`;
+        $shruncmd =~ s/CMD=//g; $shruncmd =~ s/"//g; chomp $shruncmd;
+
+        # identify *.sh file - this will be the runit script
+        $runit = `ls -1 $testdir/*.sh`; chomp $runit;
+        $newrunitname = basename($runit);
+        $newrunitname =~ s/\.sh/-sh/g;
+
+        # add modules source and load to $runit file
+        open(RUNITFILE, "< $runit");
+        @runitlines = <RUNITFILE>;
+        close(RUNITFILE);
+
+        $runittmpfile = "./runittemp";
+        open(RUNITTMPFILE, ">$runittmpfile");
+        foreach $runitline (@runitlines) {
+            chomp $runitline;
+            if ($runitline =~ "include the common Cbench functions") {
+                print RUNITTMPFILE "\. /etc/profile.d/modules.sh\n";
+                print RUNITTMPFILE "module load openmpi-gcc\n\n";
+                print RUNITTMPFILE "$runitline\n";
+            } else {
+                print RUNITTMPFILE "$runitline\n";
+            }
+        }
+        close(RUNITTMPFILE);
+        `mv $runittmpfile $testdir/$newrunitname; rm $runit`;
+
+        # make substitutions into $new_config_file
+        $new_config_file =~ s/sedauthor/Cbench/g;
+        $new_config_file =~ s/seddescription/Sample Description/g;
+        $new_config_file =~ s/sedversion/1.0/g;
+        $new_config_file =~ s/sedcompiler/gcc/g;
+        $new_config_file =~ s/sedmpilib/openmpi-gcc/g;
+        $new_config_file =~ s/sedjobsize//g;
+        $new_config_file =~ s/sednpes/$pbsnumprocs/g;
+        $new_config_file =~ s/sedtimelimit/$pbswalltime/g;
+        $new_config_file =~ s/sedtarget_wd//g;
+        $new_config_file =~ s/sedtest_params//g;
+        $new_config_file =~ s/sedcmd/$newrunitname/g;
+
+        # write config file to into subdirectory
+        print "Writing new gzconfig file into $testdir\n";
+        $config_file = "$testdir/gzconfig";
+        open(CONFIGFILE, ">$config_file");
+        print CONFIGFILE "$new_config_file\n";
+        close (CONFIGFILE);
+
+        # copy new testdir into $GZHOME/test_exec - problem, not all testdir names are unique
+        @cbsdpath = split (/\//, $testdir);
+        $cbsdname = pop @cbsdpath;  chomp $cbsdname;  # e.g. routecheck-4ppn-4
+        $cbsdident = pop @cbsdpath; chomp $cbsdident; # e.g. 4p_run1
+        $cbtestcat = pop @cbsdpath; chomp $cbtestcat; # e.g. mpisanity
+        $uniqsdname = "$cbtestcat" . "-" . "$cbsdname";
+        `cp -R $testdir $ENV{'GZHOME'}/test_exec/$uniqsdname`;
+
+        # $pbsnumprocs is the max number of used procs.  $requestedprocs = (8/$ppn)*maxprocs   
+        ($sdppn, $junk) = split (/ppn-/, $cbsdname);
+        ($junk, $ppn) = split (/-/, $sdppn);  chomp $ppn;
+        $requestedprocs = ((($pepernode)/$ppn) * ($pbsnumprocs));  
+
+        # write new submit_configs file which includes all new cbench tests
+        open(NEWSCFILE, ">>$new_scfile");
+        print NEWSCFILE "$uniqsdname $requestedprocs - - $pbswalltime *\n";
+        close(NEWSCFILE);
+    }
+}
+
+print "Writing new test_config file $new_scfile\n";
+
+# make new test_exec directories executable
+`chmod -R 755 $ENV{'GZHOME'}/test_exec/*`;
+
+# remove all the cbench artifacts except for the test directories in $GZHOME/test_exe
+#   and the test_config* file in $GZHOME/submit_configs
+#`rm -rf $cbhome`;                # cbench install dir - e.g. /users/eed/cbench-1.1.5
+#`rm -rf $tbpath/cbench_tests`;   # cbench tests dir   - e.g. /users/eed/cbench_tests
+
+# utility subroutines
+sub user_error { # text is argument
+    print "Error: $_[0]\n";
+    exit;
+}
+

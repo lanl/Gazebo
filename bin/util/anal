@@ -1,0 +1,163 @@
+#!/usr/bin/perl
+
+use strict;
+
+my @files;
+my @parts;
+my @types;
+my $new;
+my $type;
+my %xref;
+my $key;
+my $ptype = shift;
+my $subtype = shift;
+my $bwlat = shift;
+my $min = shift || 0;
+my $max = shift || 4194304;
+
+
+if($min =~ /b/i) {
+	$min =~ s/b//i;
+}
+
+if($max =~ /b/i) {
+	$max =~ s/b//i;
+}
+
+if($min =~ /k/i) {
+	$min =~ s/k//i;
+	$min *= 1024;
+}
+
+if($min =~ /m/i) {
+	$min =~ s/m//i;
+	$min *= 1024 * 1024;
+}
+
+if($max =~ /k/i) {
+	$max =~ s/k//i;
+	$max *= 1024;
+}
+
+if($max =~ /m/i) {
+	$max =~ s/m//i;
+	$max *= 1024 * 1024;
+}
+
+if($max < $min) {
+	die "error: max < min\n";
+}
+
+if(!$ptype || !$subtype || !$bwlat) {
+	print "usage: anal spp|ppp sort|shuffle|cut|fold bw|lat [min] [max]\n";
+	print "\n";
+	print "e.g. ../anal ppp sort bw\n";
+	print "\n";
+	exit(1);
+}
+
+print "$ptype $subtype $bwlat results\n\n";
+printf("%-10s   %5s    %9s    %9s    %7s    %9s    %9s    %9s\n\n","bytes","pairs","low","high","%","mean","median","std dev");
+
+opendir(OUTPUT,".");
+foreach (sort readdir(OUTPUT)) {
+	if(/^\./) {
+		next;
+	}
+
+	my @parts = split(/\./);
+
+	if($parts[0] eq $ptype && $parts[1] eq $subtype) {
+		push(@files,$_);
+	}
+}
+closedir(OUTPUT);
+
+#@types = (0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304);
+#@types = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304);
+
+if(0 == $min || 0 == $max) {
+	push(@types,0);
+}
+
+for(my $i = 0;$i < 23;$i++) {
+	my $t = 2 ** $i;
+	if($t >= $min && $t <= $max) {
+		push(@types,$t);
+	}
+}
+
+
+foreach(@types) {
+	$type = $_;
+	my @value = ();
+	my @svalue = ();
+	my @array = ();
+	my $n = 0;
+	my $high = 0;
+	my $low = 0;
+	my $avg = 0;
+	my $mid = 0;
+	my $p = 0;
+	my $std = 0;
+	my @tfiles = @files;
+	%xref = ();
+
+	foreach(@tfiles) {
+		my $file = $_;
+		@parts = split(/\./);
+		open(FILE,$file);
+		while(<FILE>) {
+			chomp();
+			if(/^$type\s/) {
+				@array = split(/\s+/);
+				if($bwlat eq "bw") {
+					push(@value,$array[3]);
+					$xref{$parts[2]} = $array[3];
+				}
+				else {
+					push(@value,$array[2]);
+					$xref{$parts[2]} = $array[2];
+				}
+			}
+		}
+		close(FILE);
+	}
+
+	$n = @value;
+	@svalue = sort { $a <=> $b } @value;
+	$low = $svalue[0];
+	$high = $svalue[@value - 1];
+	$p=0;
+	if($low > 0) {
+		$p = (1-($high/$low))*-100;
+	}
+	foreach(@svalue) {
+		$avg+=$_;
+	}
+	$avg/=$n;
+	$mid = $svalue[int(@value/2)];
+	foreach(@svalue) {
+		$std+=($_-$avg)**2;
+	}
+	if($n > 1) {
+		$std/=($n-1);
+	}
+	else {
+		$std/=($n);
+	}
+	$std=sqrt($std);
+	$type =~ s/stream_//;
+
+	printf("%-10s   %5d    %9.2f    %9.2f    %7.2f    %9.2f    %9.2f    %9.2f\n",$type,$n,$low,$high,$p,$avg,$mid,$std);
+
+	open(PLOT,">./plot.$ptype.$subtype.$bwlat." . sprintf("%07d",$type));
+	foreach $key (sort xsort (keys(%xref))) {
+		print PLOT "$xref{$key}\t$key\n";
+	}
+	close(PLOT);
+}
+
+sub xsort {
+	$xref{$a} <=> $xref{$b};
+}

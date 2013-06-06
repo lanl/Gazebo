@@ -1,0 +1,26 @@
+set xrange [0.000000:22.000000]
+set yrange [0.400000:3.600000]
+set autoscale x
+set xlabel "time"
+set ylabel ""
+set title "Gantt chart"
+set ytics ("Product" 3, "Lift" 2, "Pusher" 1)
+set key outside width +2
+set grid xtics
+set palette model RGB
+unset colorbox
+set object 1 rectangle from 0.000000, 2.6 to 2.000000, 3.4 fillcolor rgb "#FF9A00" fillstyle solid 0.8
+set object 2 rectangle from 2.000000, 1.6 to 5.000000, 2.4 fillcolor rgb "#84D200" fillstyle solid 0.8
+set object 3 rectangle from 5.000000, 0.6 to 7.000000, 1.4 fillcolor rgb "#00A2DE" fillstyle solid 0.8
+set object 4 rectangle from 7.000000, 0.6 to 10.000000, 1.4 fillcolor rgb "#AD20AD" fillstyle solid 0.8
+set object 5 rectangle from 7.000000, 1.6 to 11.000000, 2.4 fillcolor rgb "#F73131" fillstyle solid 0.8
+set object 6 rectangle from 11.000000, 2.6 to 13.000000, 3.4 fillcolor rgb "#FF9A00" fillstyle solid 0.8
+set object 7 rectangle from 13.000000, 1.6 to 16.000000, 2.4 fillcolor rgb "#84D200" fillstyle solid 0.8
+set object 8 rectangle from 16.000000, 0.6 to 18.000000, 1.4 fillcolor rgb "#00A2DE" fillstyle solid 0.8
+set object 9 rectangle from 18.000000, 0.6 to 21.000000, 1.4 fillcolor rgb "#AD20AD" fillstyle solid 0.8
+set object 10 rectangle from 18.000000, 1.6 to 22.000000, 2.4 fillcolor rgb "#F73131" fillstyle solid 0.8
+plot -1 title "place" with lines linecolor rgb "#FF9A00"  linewidth 6, \
+	-1 title "ascend" with lines linecolor rgb "#84D200"  linewidth 6, \
+	-1 title "extend" with lines linecolor rgb "#00A2DE"  linewidth 6, \
+	-1 title "retract" with lines linecolor rgb "#AD20AD"  linewidth 6, \
+	-1 title "descend" with lines linecolor rgb "#F73131"  linewidth 6

@@ -1,0 +1,26 @@
+#!/usr/bin/perl
+
+# replacement for old cmp utility
+
+use strict;
+use File::Compare;
+
+
+if ( (@ARGV != 2) || ($ARGV[0] eq "-h")) {
+  print "usage: $0 file1 file2\n";
+  print "  routine to compare two files, line by line, for exactness\n";
+  print "  returns 0 if the same, 1 if different\n";
+  
+  exit(1);
+}
+
+my $file1 = shift;
+my $file2 = shift;
+
+if (compare($file1, $file2) == 0) {
+    exit 0;
+} else {
+    exit 1;
+}
+
+exit;

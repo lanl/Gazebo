@@ -1,0 +1,25 @@
+<segName> ml
+<testName> hpl-gpu-14sepbm
+<testExec> runHpl
+<npes> 16
+<JobID> 1323211
+<nodes> ml222
+<compiler> intel/12.1
+<mpi> openmpi-intel/1.5
+<params> HPL-Template.dat 55134 1 2 1.00 0.97 dnode
+<rmgr> moab-slurm
+<user> cwi
+<host> ml222.localdomain
+<vers> 1.0
+<start> 2013-03-26T14:55:04-0600
+# a bunch of other output here .....
+<td> maxEff 20 %
+<td> maxRate 321 Mb/s
+<td> color blue
+<td> maxRate 324 Mb/s
+<td> maxRate 310 Mb/s
+<results> pass
+<results> Pass
+<results> fail, very bad 
+<results> pass 
+<results> Fail 

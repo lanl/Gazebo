@@ -1,0 +1,9 @@
+This directory contains the crux of all the Gazebo software, much of it written in Perl.  This suite of programs has evolved
+over time as people have created utilities to help with our HPC system testing and acceptance. Some of the main programs
+like atc_run, atc_testMgr, setUpandRun, atc_coverage, gzjobs, and atc_results are quite mature and have been heavily used.
+Although, there are others that may be considered to be beta level, and yet others somewhere in between. 
+
+Feel free to use or offer ideas for future development and even develop some new software if you like. If you want ideas
+for improvments we could point out a few areas too.
+ 
+Correspondance can be sent to gazebo@lanl.gov

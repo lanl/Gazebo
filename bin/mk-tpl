@@ -1,0 +1,67 @@
+#! /bin/bash
+
+# make gazebo report template
+# utility used to provide a template for Gazebo results data reports
+# output commonly used as input to combinegzreport utility 
+
+# input: none, however dates need to be edited.  See now_sec and atc_results start time
+# output: file with today's date with gazebo results and skeleton failure descriptions
+
+
+
+# The next line uses today's date
+#now_sec=`date +%s`
+
+# The next line uses a specified date
+now_sec=`date +%s -d "2011-11-21 7:00"`
+
+today=`date +%F -d@$now_sec`
+yesterday=`date +%F -d@$(($now_sec-24*3600))`
+outfile="gazebo.results.$today.txt"
+echo "Gazebo Results for $today" > $outfile
+echo >> $outfile
+c='
+   BEGIN {node_hour_total = 0}
+   /[/]gzshared[/]/ {
+     lines = lines "\n" gensub("^[[:blank:]]*", "", "g")
+     fn = gensub(".*/", "", "g")
+     test = gensub("__.*", "", "g", fn)
+     dnt = gensub("^[^.]*[.]", "", "g", fn)
+     date = gensub("T.*", "", "g", dnt)
+     time = gensub("^.*T", "", "g", dnt)
+     time = gensub("-.*$", "", "g", time)
+     lines = lines "\n\t###, "date", "time", " test", "pes", 1, " tag", -, description\n"
+     next     
+   }
+   /failing:/ {tag="failing"; next}
+   /incomplete:/ {tag="incomplete"; next}
+   /undefined:/ {tag="undefined";next}
+   /\(/ {
+     tmp = gensub("^[^.]*[.]", "", "g", $1)
+     nodes = gensub("[x].*$", "", "g", tmp)
+     pes = gensub("^[^x]*x", "", "g", tmp)
+     n = index(pes, "(")
+     if (n>0) pes = substr(pes, 1, n-1)
+     tmp = gensub("^.*[)][[:blank:]]*[[:digit:]]*[[:blank:]]*", "", "g")
+     runs = gensub("[[:blank:]]+.*", "", "g", tmp)
+     sec = gensub(".*[[:blank:]]+", "", "g")
+     node_hour = nodes * runs * sec / 3600
+     node_hour_total = node_hour_total + node_hour     
+     print $0 "\t " node_hour
+     next
+   }
+   /========/ {print $0 "\t =========="; next}
+   /Run Time/ {print $0 "\t Node Hours"; next}
+   {print $0}
+   END {
+     print "Total node hours: " node_hour_total
+     print lines
+   }'
+#   print "Equivalent system hours: " node_hour_total / 1550 
+#cat atc_results.test.out | awk "$c" 2>&1 | tee -a $outfile
+#atc_results -s $yesterday -S 6:00:00 -e $today -E 05:59:59 -fi | awk "$c" >> $outfile
+atc_results -s 2011-11-18 -S 18:00:00 -e $today -E 07:59:59 -fi | awk "$c" >> $outfile
+echo >> $outfile
+echo "--- end of file ---" >> $outfile
+echo "Output in $outfile"
+

@@ -1,0 +1,835 @@
+#!/usr/bin/perl
+#
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2007, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2007. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+#GAZEBO submits jobs for execution
+
+#
+#     - main control program for running Gazebo tests
+#       Called by mythd, but can be used stand-alone too.
+#
+
+use POSIX;
+use Text::ParseWords;
+use Getopt::Std;
+use File::stat;
+use File::Spec;
+use File::Basename;
+use Time::Local;
+use Cwd;
+use FileHandle;
+STDOUT->autoflush(1);
+STDERR->autoflush(1);
+
+my $prog;
+($prog = $0) =~ s/.*\///;
+
+use Cwd 'abs_path';
+use File::Basename;
+$pwd = dirname(abs_path("$0"));
+chomp($pwd);
+unless ( do "$pwd/get_gazebo_config") {
+  die "get_gazebo_config failed!";
+}
+$ENV{'RESOURCEMGR'} = $gazebo_conf{"Job_Dispatcher"};
+unless ( $gazebo_conf{"Job_Dispatcher"} =~ /moab/ ) {
+  die "Job_Dispatcher must be a Moab choice, please edit gazebo.conf file";
+}
+$ENV{'GZ_SITE'}     = $gazebo_conf{"Site"};
+
+
+use strict;
+my $startTime;
+my $endTime;
+my $dateStarted;
+my $myLogin;
+my $gzrun_log;
+my $nprocs = 32;
+my $nnodes;
+my $runLimit = "02:00:00";
+my $targetMach;
+my $que;
+my $team;
+my %active_jobs = ();
+my %job_names = ();
+my $mailList = "";
+my $totalTests;
+my $testsRun;
+our $testNotRun;
+my $testdir;
+my $testName;
+my $testResult;
+our %opt;
+our $working_dir = "";
+our %test_config;
+our $test_src;
+our $targetdir = undef;
+our $kill_me = 0;
+our $whereStarted = "";
+
+my $config_file="/var/gazebo/etc/mythd.conf";
+my $st = stat($config_file);
+die "$prog: unable to stat $config_file.\n" unless (defined($st));
+print(qq|$prog: $config_file must not be world writable!|)
+   if ($st->mode & S_IWOTH);
+print(qq|$prog: $config_file must not be group writable!|)
+   if (($st->mode & S_IWGRP) >> 3);
+print(qq|$prog: $config_file must be readable!|)
+   unless (($st->mode & S_IRUSR) >> 6);
+
+require $config_file;        # include config file defs
+
+# make sure necessary variables are defined in mythd config file
+die "$prog: no cluster name (CN) defined in $config_file!\n"
+   unless (exists ($ENV{CN}));
+die "$prog: no architecuture type (ARCH) defined in $config_file!\n"
+   unless (exists ($ENV{ARCH}));
+die "$prog: no communicatin pipe (CPIPE) defined in $config_file!\n"
+   unless (exists ($ENV{CPIPE}));
+die "$prog: no install dir (GAZHOME) defined in $config_file!\n"
+   unless (exists ($ENV{GAZHOME}));
+
+our $GazeboHome = $ENV{'GAZHOME'};
+
+# make sure mythd is running or data archive process will never work
+my $res = `ps -ef | grep myth`;
+die "$prog: no mythd (Gazebo) process is running, cannot continue!\n"
+   unless ( $res =~ /mythd/ );
+
+# create the default working directory where runtime logs are kept
+my $myth_dir = "$ENV{HOME}/.gazebo-$ENV{CN}";
+unless ( -e $myth_dir ) {
+  system("mkdir -p $myth_dir");
+  die "$prog: can't make $myth_dir directory"
+     unless (-e $myth_dir);
+  system("chmod -R 775 $myth_dir");
+}
+system("cp -u $GazeboHome/include/README-gazeboDir $myth_dir/README");
+
+# location where Moab output files are initially stored 
+my $DRMLogDir = "$myth_dir/drmlogdir";
+
+# catch int, term, and hup signals so they are handled cleanly
+my $now;
+my $sig;
+
+sub killme_handler {
+   ($sig) = @_;
+   $kill_me = 1;
+   $now = `date`;
+   print "$prog: $now -  process shutting down from signal SIG$sig \n";
+
+   if ( $whereStarted ne "") {
+     chdir $whereStarted;
+   }
+   # remove temporary working directory if the job got that far.
+   if ( $working_dir ne "") {
+      my $basedir = dirname($working_dir);
+     if ( -e  "$basedir" ) {
+       system("(chmod -R u+x $basedir; rm -rf $basedir)\n");
+     }
+   }
+
+}
+
+# handle some signals gracefully
+# if the job is queued or running the temporary working dir will be removed
+# and the job stopped.
+$SIG{INT} = $SIG{TERM} = $SIG{HUP} = \&killme_handler;
+
+  set_values();
+  print_params();
+  run_tests();
+  print_test_summary();
+  send_mail() if ($opt{p});
+
+  exit 1;
+
+
+sub set_values {
+
+# initialize and verify we have all the variables set up.  
+
+    my $search_path = $ENV{'PATH'};
+    $dateStarted = `date +"%h %d, %Y"`;
+    chop $dateStarted;
+    $myLogin = `whoami`;
+    chop $myLogin;
+    my $cpuPerNode;
+    my $thisDir = &cwd;
+
+    getopts("a:t:i:g:n:q:o:hdsbwr:p:P:W:m:l:", \%opt);
+
+    if ( $opt{h} ) { usage(); exit; } 
+
+    $gzrun_log = "$myth_dir/gzrun.log";
+    open( LOG, ">>", $gzrun_log ) or die "can't open $gzrun_log: $!\n";
+
+    if ( $opt{q} ) { 
+      $que = $opt{q};
+    } elsif (defined $ENV{TEST_QUE} ) {
+      $que = $ENV{TEST_QUE};
+    } else {
+       $que = "testupq";
+    }
+
+    unless (defined $ENV{TESTHOME}) {
+       msg_all ("error: no TESTHOME ENV variable defined");
+       exit;
+    }
+
+   # find out which tests/jobs this users can run
+    if ( $opt{w} ) { 
+       my $mygrps;
+       my @mygrps;
+       if ( $ENV{'USER'} eq "gazebo") { 
+	 # gazebo can see all
+	 $mygrps = `ls $ENV{TESTHOME}/$ENV{ARCH} | xargs`; 
+         @mygrps = split(/ /, $mygrps);
+       } else {
+         my $mygrps = `$GazeboHome/bin/gazebo_listgrp -u $ENV{'USER'}`;
+         chomp $mygrps;
+         @mygrps = split(/ /, $mygrps);
+       }
+       my $mg;
+       my @tsts;
+       my $t;
+       my $vals;
+       print "\nTests available in each group (and specific job sizes in npes) \n";
+       foreach $mg (@mygrps) { 
+         chomp $mg;
+	 next unless $mg =~ /^gz/; # don't care about groups other than gazebo groups
+	 if ( -R "$ENV{TESTHOME}/$ENV{ARCH}/$mg") {
+           my $query = `ls -1 $ENV{TESTHOME}/$ENV{ARCH}/$mg`;
+           @tsts = split(/\n/, $query);
+	   print "\n$mg group: \n";
+	   if ( @tsts == 0) { print "\tnone\n";}
+           foreach $t (@tsts) {
+                my $f = "$ENV{TESTHOME}/$ENV{ARCH}/$mg/$t/config";
+		if ( -R "$f") {
+		  my $l = `/bin/grep JOBSIZE $f`;
+		  $l =~ /JOBSIZE/;
+		  $l =~ /"(.*)"/;
+		  $vals = $1;
+		}
+		if ($vals eq "") {
+		  print "\t$t\n";
+	  	} else {
+		  print "\t$t  ($vals)\n";
+		}
+	   }
+	 }
+       }
+       exit;
+    }
+
+    # set up team environment
+    if ( $opt{g} ) {
+       $team = $opt{g};
+       $ENV{'GZGRP'} = $team;
+       unless  ($ENV{'USER'} eq "gazebo") { 
+	 # make sure general user is part of this group/team 
+	 unless (`$GazeboHome/bin/gazebo_listgrp -u $ENV{'USER'} -g $team`) {
+           msg_all ("error: no access to $team tests");
+	   exit;
+	 }
+       }
+    }
+    else {
+       msg_all ("error: no team/group (-g) identified");
+       exit;
+    }
+    umask 002; # owner/group gets full access to files
+
+
+    if (defined $ENV{NCPU_HOSTS}) {
+	$cpuPerNode = $ENV{NCPU_HOSTS};
+    }
+    else {
+        $cpuPerNode = 8;
+    } 
+    
+    # no "-m" option needed if resource list provided with "-l" option
+    my $tmp_name;
+no strict 'vars';
+    unless ( $opt{l} ) {
+      if ( $opt{m} ) { 
+        $tmp_name = $opt{m};
+        # now map the user input to the actual partition name that the scheduler/RM
+        # will use.  
+        my $ts = "Cluster_Segment_" . $tmp_name;
+	my @parts = split(",", $gazebo_conf{$ts});
+        $targetMach = $parts[0];
+        if ($targetMach eq "") {
+             msg_all ("error: could not extract partition name from $ts value in gazebo.conf file");
+             exit;
+        }
+      }
+      else {
+         msg_all ("error: no target machine (-m) identified");
+         exit;
+      }
+    }
+    
+    if ( $opt{t} ) { 
+    # at the moment gzrun will handle one test at a time. 
+       $testName =  $opt{t}
+    }
+    else {
+       msg_all ("error: no test (-t) identified");
+       exit;
+    }
+
+    if( $opt{p} ) { $mailList = $opt{p} };
+
+    if ( $opt{o} ) {
+      $DRMLogDir = $opt{o}
+    }
+    else {
+      unless ( -e "$DRMLogDir") {
+	`mkdir -p $DRMLogDir`;	
+       }
+    }
+
+    $ENV{'PATH'} = ".:" . $search_path . ":" . $GazeboHome . "/bin" . ":/lsf/bin:/opt/MOAB/bin";
+
+    # grab the correct test config file
+    # so the test_config hash can be initialized
+    $test_src = "$ENV{TESTHOME}/$ENV{ARCH}/$team/$testName";
+    unless ( -R "$test_src" ) {
+       msg_all ("error: No access to $test_src directory. Verify the group and test names");
+       exit;
+    }
+    if ( -R "$test_src/config") {
+      print "  using test source from: $test_src\n";
+       do "$test_src/config";
+    } else {
+       msg_all ("error: No config file found in $test_src directory, Quitting!");
+       exit;
+    }
+
+   # set up env parameters for all of the config file variables
+   my $key;
+   my $value;
+   my $k;
+   foreach $k (sort keys %test_config) {
+     $test_config{"$n"} =~ s/\s/_/g; # remove pesky white space
+     $ENV{$k} = $test_config{$k};
+   }
+
+    my $hrs;
+    my $mins;
+    # find out how long to schedule this job. If never told schedule 2 hours, WTH. 
+    if ( $opt{W} ) {
+      if ($opt{W} > 59) {
+	use integer;
+        $hrs = $opt{W} / 60; 
+      }
+      else {
+	$hrs = 0;
+      }
+      $mins = $opt{W} % 60; 
+      if ( $mins < 10 ) { $mins = "0" . "$mins"; }
+      $runLimit =  "$hrs:$mins:00";
+    }
+    elsif (exists $test_config{'TIMELIMIT'} && ($test_config{'TIMELIMIT'} ne "")) {
+      $runLimit = $test_config{'TIMELIMIT'};
+    } 
+    
+    # if "-l" is used, don't bother with node calculations
+    unless ( $opt{l} ) {
+      # determine number of processors to use.
+      if ( $opt{n} ) { 
+          $nprocs = $opt{n};
+      }
+      elsif (exists $test_config{'NPES'} && ($test_config{'NPES'} ne "")) {
+        $nprocs = $test_config{'NPES'};
+      }
+      else {
+         msg_all ("error: number of procs (-n) not identified");
+         exit;
+      }
+      $ENV{'NPES'} = $nprocs; 
+
+      # determine number of nodes to use.
+      if (( $nprocs % $cpuPerNode) > 0 ) {
+         use integer;
+         $nnodes = $nprocs/$cpuPerNode;
+         $nnodes += 1;
+      } else {
+         $nnodes = $nprocs/$cpuPerNode;
+      }
+    }
+
+    # override test parameters
+    # should do some parameter checking here!
+    if ( $opt{P} ) { 
+      if ( length($opt{P}) > 4096 ) {
+         msg_all ("error: input parameter string greater than max 4096 chars");
+         exit;
+      } 
+      $ENV{TEST_PARAMS} = $opt{P};
+    }
+
+    # see if test should be run in a different working directory than in home space.
+    # Often needed for tests that create large amount of test data.
+    if ( exists $test_config{'TARGET_WD'} && ($test_config{'TARGET_WD'} ne "")) {
+      my $chk = `$GazeboHome/bin/fs_access_check $test_config{'TARGET_WD'} $ENV{'GZGRP'}`;
+      chomp $chk;
+      if ($chk == "0") {
+         msg_all ("error: target working directory $test_config{'TARGET_WD'} not accessible, Quitting!");
+         exit;
+      }
+      $working_dir = "$test_config{'TARGET_WD'}/pid-$$/$testName";
+    } else {
+      $working_dir = "$myth_dir/pid-$$/$testName";
+    }
+
+    # Check to see if job has specific size limitations. 
+    # not checked if "-l" option is used
+    unless ( $opt{l} ) {
+     if (exists $test_config{'JOBSIZE'} && ($test_config{'JOBSIZE'} ne "")) {
+       my @sizes = split(/,/, $test_config{'JOBSIZE'});
+       my @garr = grep(/$nprocs/, @sizes);
+       my $count = @garr;
+       if ($count == 0) {
+         msg_all ("error: Job size of $nprocs not supported. Only ($test_config{'JOBSIZE'}) valid");
+         exit;
+       }
+     }
+    }
+
+    unless (exists $test_config{'COMPILER'}) {
+       msg_all ("error: no COMPILER variable in config file");
+       exit;
+    }
+
+    unless (exists $test_config{'MPILIB'}) {
+       msg_all ("error: no MPI variable in config file");
+       exit;
+    }
+
+    unless (exists $test_config{'VERSION'} )  {
+       msg_all ("warning: VERSION may not defined in config file");
+    }
+
+    if (exists $test_config{'CMD'} )  {
+      $ENV{GZ_TESTEXEC} = $test_config{'CMD'};
+    } else {
+      $ENV{GZ_TESTEXEC} = "runit";
+    }
+
+}
+
+sub print_params {
+
+    msg_log( "\n ******************* new job ***************** " );
+    msg_log( "\n Parameter setup: " );
+    if ( $opt{l} ) {
+      msg_log( "    resource list -  $opt{l}" );
+    } else {
+      msg_log( "    target segment -  $targetMach" );
+      msg_log( "    # of processors = $nprocs " );
+      msg_log( "    # of nodes = $nnodes " );
+    }
+    msg_log( "    test name  = $testName " );
+    msg_log( "    user =        $myLogin" );
+    msg_log( "    team/group =  $team" );
+    msg_log( "    test run directory = $working_dir " );
+    msg_log( "    using queue = $que " );
+    msg_log( "\n" );
+}
+
+
+sub run_tests {
+   
+    $whereStarted = &cwd;
+
+    $testsRun = 0;
+    $testNotRun = 0;
+    $startTime =  `/bin/date`;
+
+    # handle one test at a time at the moment
+    # the logic could be added here to loop thru a list though  
+
+    # if the working dir is not around makeit
+    unless (-e $working_dir) {
+      `mkdir -p $working_dir`;
+    }
+    system("chmod -R 775 $working_dir");
+
+    # check to make sure directory is writeable by whomever is running
+    # this program. It might be gazebo if run from the web, otherwise
+    # its the user.
+    unless ( -w $working_dir) {
+        msg_all("error: not able to write to working directory - $working_dir");
+        $testNotRun++;
+        return;
+    }
+
+    msg_all("  working directory: $working_dir");
+
+    # Move the test source tree into the temporary working directory 
+    `/usr/bin/rsync -av $test_src/ $working_dir --exclude="*.tar"`;
+    $ENV{RUNHOME} = $working_dir; # needed by command scripts
+
+    if ( -f "$working_dir/$ENV{CMD}" ) {
+           run_this_test(basename($working_dir));
+    } else {
+           msg_all("error: not able to run from $working_dir; can't find $ENV{CMD} script");
+           $testNotRun++;
+    }
+
+    chdir $whereStarted;
+
+    # clean up the temporary working directory unless the debug flag is set.
+    # although, never clean up in batch mode so myth daemon can process it later.
+    unless ( $opt{d} || $opt{b} ) {
+       my $basedir = dirname($working_dir);
+       system("(chmod -R u+x $basedir; rm -rf $basedir)\n");
+    }
+    
+}
+
+sub run_this_test {
+    my $thisTest= shift;
+
+    my $result_str = undef; 
+
+
+# dispatch with  msub
+# all jobs run in batch mode
+
+    my $wm = `which msub`;
+    chomp $wm;
+    my $command = "$wm -V";
+    $command .= " -a $opt{a}" if ($opt{a});
+    $command .= " -o $DRMLogDir";
+    $command .= " -j oe";
+    $command .= " -N " . "$thisTest"; 
+    $command .= " -q $que";
+    if ( $opt{l} ) {
+      $command .= " -l " . "$opt{l}"; 
+    } else {
+      $command .= " -l " . "nodes=$nnodes:$targetMach:ppn=8,walltime=$runLimit"; 
+    }
+
+ # jobs now are dispatched through a generic SetUpandRun wrapper script.
+ # All tests use the RUNHOME ENV variable to know where they should run from. 
+    $command .= " $GazeboHome/bin/setUpandRun"; 
+
+    if ( $kill_me == 1) {
+        msg_all( "  cancelling $command" );
+	return;
+    } 
+    msg_all( "  run: $command" );
+    open( RUNTEST,  "$command |" );
+    while( <RUNTEST> ) {
+       chomp $_;
+       if (/ERROR/) {
+         $result_str = "msub $_, $thisTest not run\n";
+	 msg_all($result_str); 
+         last;
+       }
+       if ( $_ eq "") {
+	 next;
+       }
+       # print job_id, returned from scheduler, to STDOUT 
+       # so that the log file can be parsed to find where the job data is placed. 
+       if (/^([0-9]+)/) {
+	 my $jobid = $1;
+	 $result_str = "jid:=" . $jobid;
+
+         if ($opt{b} ) { # in batch mode
+	    msg_all($result_str); 
+
+         } else { # simulate interactive mode
+ 	   $active_jobs{$jobid} = $DRMLogDir;
+ 	   $job_names{$jobid} = $thisTest;
+	   while (values(%active_jobs) > 0)  {
+	     if ($kill_me == 1) {
+	       `/opt/MOAB/bin/bkill $jobid`;
+	       # should we or should we not remove the DRM file??  
+               # system("rm -rf $DRMLogDir/${jobid}.*") if (-e "$basedir");
+	       last;
+	     } elsif ( $opt{i} < 30 ) {
+	       sleep(30); 
+	     } elsif ( $opt{i} >= 30 ) {
+	       sleep($opt{i}); 
+             } else {
+	       sleep(90); 
+	     }
+	     process_complete_jobs();
+	   }
+	 }
+       } 
+    }
+    close( RUNTEST );
+
+     # if nothing runs... 
+    unless (defined $result_str) {
+      msg_all("Warning: no results found for $thisTest, it may not have run!\n"); 
+    }
+}
+
+sub print_test_summary {
+
+    $endTime = `/bin/date`;
+
+    $totalTests = $testsRun + $testNotRun;
+    if( !$que ) { $que = "default queue"; }
+    msg_log( "\n" );
+    msg_log( "+ $prog session test summary:" );
+    msg_log( "       started:     $startTime" );
+    msg_log( "       finished:    $endTime" );
+    if (defined($targetdir)) {
+	msg_log( "       log dir:     $targetdir" );
+    }
+    msg_log( "\n" );
+
+    close( LOG );
+
+}
+
+sub msg_log {
+    my $message = shift;
+
+    print LOG "$message\n";
+}
+
+
+sub msg_all {
+    my $message = shift;
+
+    print "$message\n";
+    print LOG "$message\n";
+
+}
+
+sub usage {
+
+  print "\n\n";
+  print <<usage_info; 
+usage: gzrun -m <machine name> -g <group name> -t <test> [ optional arguments ]
+          -a run job at this date/time in the future. format: "-a [[[[CC]YY]MM]DD]hhmm[.SS]" 
+          -d debug mode. Leave all temporary directories around after a job run, default is to remove 
+          -g specify the group (a.k.a. team) name. eg. "-g gzptools" 
+          -h print help screen
+          -i check interval. Number of seconds between checking job status. Default 90 secs, min 30 secs 
+          -l specify resource manager list ("-l option"). "-m" and "-n" options ignored in this mode 
+          -m specify the machine (a.k.a. segment) to use
+          -n specify the number_of_processors to use
+          -o send output results to this directory 
+	  -p e-mail (or post) results to this user
+	  -P specify test argument(s). Quoted string of up to 128 chars. Creates TEST_PARAMS ENV variable. 
+          -q specify the scheduler queue
+          -s run in silent mode. Does not print out "checking" and "running" messages 
+          -t specify the test (a.k.a. job) name. Scripts called from directory with this name
+	  -w show what tests are available to run (fixed jobs sizes if defined)
+          -W specify the run time limit (in min)
+usage_info
+  print "\n\n";
+}
+
+
+sub send_mail {
+
+   my $mailto = "$opt{p}";
+
+  if ( open(MAIL, '| /usr/sbin/sendmail -oi -t')) {
+
+print MAIL <<"EOF";
+From: gazebo <root\@rr-fe1.lanl.gov>
+To: $mailto
+Subject: test result 
+
+$testResult
+
+EOF
+
+  }
+
+
+}
+
+sub process_complete_jobs {
+# look for jobs that are done running and moves any output files where they need to go
+
+  my ($jobid,$stuff,$test,$outputdir,$workingdir);
+  my $drmfilename = undef;
+
+  # Go thru the active jobs every so often looking for completed ones
+  # and process the logs 
+
+  $stuff = "";
+
+   # check the DRM output of all active jobs.
+   # We can then parse from these logs where the job put its output data. 
+   foreach $jobid ( keys %active_jobs ) {
+
+       # issue checkjob command to get current status of each jid
+       $stuff = `checkjob $jobid | grep State`;
+       chomp($stuff);
+
+       my $timenow = `date +%R`;
+       chomp $timenow;
+
+       unless ( $opt{s} ) {
+	print "\rstatus of $job_names{$jobid}(jid=$jobid) @ $timenow, ";
+       }
+
+       if ( $stuff =~ /Idle/ ) {
+          # job has been accepted by DRM and now waiting to launch
+	  print "Idle";
+          next;
+       } elsif ( $stuff =~ /Running/ ) {
+          # job is running
+	  print "Running" unless ( $opt{s} );
+          next;
+       } elsif  (( $stuff =~ /Completed/ ) ||
+	        ( $stuff =~ /Removed/ ) ||
+	        ( $stuff =~ /Cancel/ ) ||
+		( $stuff =~ /cannot locate job/ ) ||
+		( "$stuff" eq "" ))
+       { # job is now finished, well at least scheduler is done with it 
+
+	 print "Finished\n" unless ( $opt{s} );
+
+         # find the name of the DRM output file
+          my @nl = `ls $DRMLogDir`;
+          foreach (@nl) {
+             if (/$jobid/) {
+               $drmfilename = $_;
+               chomp $drmfilename;
+	     }
+          }
+
+         unless (defined($drmfilename)) {
+          # Hmmm, at this point if scheduler thinks it's done with it, but there
+          # is no DRM output file, job is probably toast. Clean up and make a note.
+           msg_all ("WARNING: No DRM files found for job $jobid");
+           msg_all ("\tcheckjob returned -> $stuff");
+           msg_all ("\tremoving $job_names{$jobid} from active job hash");
+           delete $active_jobs{$jobid};
+	   delete $job_names{$jobid};
+           next;
+         }
+
+         if ( -R "$DRMLogDir/$drmfilename") { 
+
+print "  $job_names{$jobid}($jobid) completed!\n";
+
+ 	   my $out = `cat $DRMLogDir/$drmfilename`;
+           print "$out";
+
+           # rummage through DRM output files looking for where test put its logs
+	   my $line = `grep tld $DRMLogDir/$drmfilename`;
+	   chomp $line;
+	   if ($line =~ /^tld -> (.*)/) {
+	       $workingdir = $1; 
+               my $tmp = basename($workingdir);
+	       $targetdir = qx($GazeboHome/bin/gz_glean -p -t $job_names{$jobid} -g $team -f $tmp);
+	       chomp $targetdir;
+
+               # move the DRM generated output files into the temporary working dir
+               # so that they can be slurped up later with all the other log data
+               system("mv -f $DRMLogDir/${jobid}.* $workingdir\n");
+               system("chmod -R 755 $workingdir\n");
+
+	       # ask mythd to store our data for us.
+               my $comm_pipe = "$ENV{CPIPE}";
+               my $fifo;
+               # open the pipe for writing 
+               open($fifo, ">",  "$comm_pipe") or
+                  die "Couldn't open $comm_pipe for writing: $!\n";
+               print $fifo "type:=STORE_DATA_req,group:=$team,srcdir:=$workingdir";
+               close $fifo;
+
+               # wait a moment for glean to work. Possible race condition if glean 
+               # takes it sweet time. If we start having issues chklg should be made 
+               # a bit more robust. 
+               sleep(7);
+
+               # once the data has been moved and gleaned remove the entry from the active_jobs hash
+               if (exists $active_jobs{$jobid}) {
+                 delete $active_jobs{$jobid};
+               }
+
+	       $testResult = `$GazeboHome/bin/util/chklg $targetdir/$job_names{$jobid}*.log`;
+               print "results directory: $targetdir\n";
+               print "$testResult";
+	   }
+	   else {
+	     print "Houston we have a problem, no log directory ptr found in $DRMLogDir/$drmfilename\n";
+	     # looks like the job died
+             if (exists $active_jobs{$jobid}) {
+               delete $active_jobs{$jobid};   
+	     }
+             if (exists $job_names{$jobid}) {
+               delete $job_names{$jobid};   
+	     }
+           }
+         } else { 
+           # no readable DRM file exists! Should never get here.
+           msg_all ("WARNING: DRM file $DRMLogDir/$drmfilename not readable!");
+           msg_all ("\tremoving $job_names{$jobid} from active job hash");
+           delete $active_jobs{$jobid};
+	   delete $job_names{$jobid};
+           next;
+         }
+
+       } # job finished 
+   } # foreach
+} # end process_complete_jobs 

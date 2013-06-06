@@ -1,0 +1,118 @@
+#!/usr/bin/perl
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# this script creates a tar file of the Gazebo Project
+
+print "Creating tar files of the Gazebo Acceptance Testing Package ...\n";
+
+## -------------------------------------------------------------------- ##
+## -------------------------------------------------------------------- ##
+
+# command line options
+our %opts;
+use Getopt::Std;
+
+getopts("hav:",\%opts);
+
+# print usage message if requested
+if ( $opts{h} ) {
+   $use = <<EOF;
+Usage:  $0 [-a][-c][-h]
+   -h gives this help message
+   -v version number to build 
+EOF
+   print "$use\n";
+   exit;
+}
+
+$now = `date "+%Y-%m-%d_%H%M"`;
+chomp($now);
+$tmpdir = "./tmpdir/gazebo-$opts{v}";
+
+die "Must define version (-v).\n" unless (defined($opts{v}));
+
+# first move appropriate directories into the tmp directory
+print "\t... Copying files ... \n";
+system("mkdir -p $tmpdir\n");	
+system("mkdir -p $tmpdir/docs\n");	
+system("mkdir -p $tmpdir/bin\n");	
+system("mkdir -p $tmpdir/include/simple\n");	
+system("cp -a  ../docs/ATC_README $tmpdir/docs/README\n");
+system("cp -a  ../docs/Overview $tmpdir/docs/Overview\n");
+system("cp -a  ../docs/setupAndInstall.txt $tmpdir/docs/setupAndInstall.txt\n");
+system("cp -a  ../docs/TrendData.txt $tmpdir/docs/howto-add-TrendData.txt\n");
+system("cp -a  ../docs/Gazebo_project.ppt $tmpdir/docs/Gazebo_project.ppt\n");
+system("cp -a  ../docs/gazebo.1 $tmpdir/docs/gazebo.1\n");
+system("cp -a  ../include/gazebo.conf.example $tmpdir/include/gazebo.conf.example\n");
+system("cp -a  ../include/gzconfig.example $tmpdir/include/gzconfig.example\n");
+system("cp -a  ../include/runit.example $tmpdir/include/runit.example\n");
+system("cp -a  ../include/makeit.example $tmpdir/include/makeit.example\n");
+system("cp -a  ../include/test_config_example $tmpdir/include/test_config_example\n");
+system("cp -a  ../include/dbcfg $tmpdir/include/dbcfg\n");
+system(qq(rsync -a  --exclude=CVS/ ../include/simple/ $tmpdir/include/simple\n));
+
+system("echo $opts{v} > $tmpdir/docs/Version");
+
+system(qq(/usr/bin/rsync -a --exclude="create_ATC*" --exclude="wrapper*" --exclude="tmpdir/" --exclude="archive" --exclude="atc_run.*" --exclude="util/Perl*" --exclude="mysql/perl" --exclude=CVS/ --exclude="myth" --exclude="scratch" --exclude="*.tar" --exclude="*.old" --exclude="*.bck" --exclude="*.new" --exclude="*.prev*" --exclude="bintar*" . $tmpdir/bin));
+
+# now tar up the tmp dir for transmit to remote machines for ATC
+print "\t... Tarring acceptance testing scripts ... \n";
+system(qq(cd ./tmpdir; tar cvfz gazebo-$opts{v}.tgz gazebo-$opts{v} ));
+
+## -------------------------------------------------------------------- ##
+
+print "\t... Cleaning up ... \n";
+system("rm -rf $tmpdir\n");

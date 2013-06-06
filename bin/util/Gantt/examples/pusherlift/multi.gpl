@@ -1,0 +1,10 @@
+reset
+set terminal postscript eps color solid
+set output "balancedmulti.eps"
+set lmargin 4
+set rmargin 5
+set multiplot layout 2,1
+    load "balancedgantt.gpl"
+    load "balancedlottime.gpl"
+unset multiplot
+unset output

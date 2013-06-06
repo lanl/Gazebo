@@ -1,0 +1,50 @@
+#!/usr/bin/perl
+
+use strict;
+
+if ( $ARGV[0] eq "-h") {
+  print "usage: $0\n";
+  print "\troutine to tar the appropriate gazebo binaries for release\n";
+  exit(1);
+}
+
+
+print "Creating a tar file of the Gazebo bin directory ...\n";
+
+
+
+## -------------------------------------------------------------------- ##
+## -------------------------------------------------------------------- ##
+
+my $now = `date "+%Y-%m-%d_%H%M"`;
+chomp($now);
+my $thisdir = `pwd`;
+chomp($thisdir);
+my $tmpdir = "bintar$$";    	# tmp working dir
+
+
+# first move appropriate directories into a temporary directory
+print "\t... Copying files ... \n";
+system("mkdir -p $tmpdir\n");
+system(qq(/usr/bin/rsync -a . $tmpdir/bin --exclude="archive" --exclude="mysql" --exclude="atc_run.*" --exclude="util/Perl*" --exclude="CVS" --exclude="myth" --exclude="scratch" --exclude="*.tar" --exclude="*.old" --exclude="*.bck" --exclude="*.new" --exclude="*.prev*" --exclude="bintar*"));
+#system(qq(/usr/bin/rsync -a . $tmpdir/bin --exclude="archive" --exclude="atc_run.*" --exclude="util/Perl*" --exclude="CVS" --exclude="myth" --exclude="scratch" --exclude="*.tar" --exclude="*.old" --exclude="*.bck" --exclude="*.new" --exclude="*.prev*" --exclude="bintar*"));
+
+## -------------------------------------------------------------------- ##
+
+# now tar up the tmp/bin dir for transmit to remote machines for ATC
+print "\t... Tarring acceptance testing scripts ... \n";
+system("cp get_gazebo_config.atc $tmpdir/bin/get_gazebo_config\n");
+system(qq(cd $tmpdir; tar cvfz gazebo_binOnly.${now}.tgz --exclude "bin/gzrun*" --exclude "bin/chkResultsDBI" --exclude "bin/runTest*" bin));
+
+## -------------------------------------------------------------------- ##
+
+print "\t... Cleaning up ... \n";
+system("rm -rf $tmpdir/bin\n");
+
+if ( -e "$tmpdir/gazebo_binOnly.${now}.tgz" ) {
+   print "\n*** tar of bin directory completed:\n\t $thisdir/$tmpdir/gazebo_binOnly.${now}.tgz\n";
+} else {
+   print "*** Tar file NOT generated, some ERROR has occured. ***\n";
+}
+
+exit;

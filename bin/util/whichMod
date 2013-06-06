@@ -1,0 +1,21 @@
+#!/usr/bin/perl
+
+# find where, if possible, the module you want to use will be found
+# example usage:  whichmod <"mysql" or "DBD::mysql">
+
+my $mod_name = shift;
+chomp $mod_name;
+our $avail =0;
+
+if(eval "use $mod_name; 1") {
+    print "$mod_name is available\n"; 
+    #print qw($INC{$mod_name.".pm"} $mod_name);
+    s/::/\//g, s/$/.pm/ for $mod_name;
+    require $mod_name;
+    print  "$INC{$mod_name} \n";
+} else {
+    print "$mod_name is NOT available\n"; 
+}
+
+exit;
+

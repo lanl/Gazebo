@@ -1,0 +1,26 @@
+#!/usr/bin/perl
+
+use strict;
+
+if ( (@ARGV != 3) || ($ARGV[0] eq "-h")) {
+  print "usage: compareFloats valA valB dp\n";
+  print "routine to compare two floating point numbers to dp decimal places\n";
+  exit(1);
+}
+
+my $A = shift; # value 1
+my $B = shift; # value 2
+my $dp = shift; # check to this many decimal places
+
+
+# my $tmp = sprintf("%.${dp}f", $A);
+# print "$tmp\n";
+
+ if (sprintf("%.${dp}f", $A) eq sprintf("%.${dp}f", $B)) {
+  print "PASS: values match\n";
+ } else {
+  print "FAIL: values do not match\n";
+  print "comparing values $A and $B to $dp places\n";
+ }
+
+exit;

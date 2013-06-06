@@ -1,0 +1,193 @@
+#!/usr/bin/perl -w
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright 
+#  ==================================
+#
+#  Copyright (c) 2009, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2009. Los Alamos National Security, LLC. 
+#  This software was produced under U.S. Government contract 
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
+#  which is operated by Los Alamos National Security, LLC for 
+#  the U.S. Department of Energy. The U.S. Government has rights 
+#  to use, reproduce, and distribute this software.  NEITHER 
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES 
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY 
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to 
+#  produce derivative works, such modified software should be 
+#  clearly marked, so as not to confuse it with the version 
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary 
+#  forms, with or without modification, are permitted provided 
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer. 
+#  -  Redistributions in binary form must reproduce the 
+#     above copyright notice, this list of conditions 
+#     and the following disclaimer in the documentation 
+#     and/or other materials provided with the distribution. 
+#  -  Neither the name of Los Alamos National Security, LLC, 
+#     Los Alamos National Laboratory, LANL, the U.S. Government, 
+#     nor the names of its contributors may be used to endorse 
+#     or promote products derived from this software without 
+#     specific prior written permission.
+#   
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC 
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS 
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, 
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY 
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR 
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT 
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+
+# script which returns node related information including:
+#   o  id of jobs run on this node
+#   o  name of jobs run on this node
+#   o  start time of jobs run on this node
+#   o  uptime output for this node
+#   
+# 6/2008, initial creation. E. Dougherty
+
+require "getopts.pl";
+use Cwd 'abs_path';
+use Getopt::Long;
+use File::Basename;
+
+$opt_n = '';  # node number // required
+$opt_j = '';  # jobid       // if missing, all jobs on this node
+$opt_l = '';  # file listing paths to log files
+$opt_s = '';  # start date  // default 15 days ago
+$opt_e = '';  # end date    // default now
+$opt_h = '';  # help
+
+# tell getopt that the n, j, s, and e options require an argument
+&GetOptions( "h", "n=s", "j=s", "l=s", "s=s", "e=s");
+
+# print usage if h option set
+if ($opt_h) { usage(); exit; }
+
+my $nodename;
+my $node = $opt_n;
+my $jobid = "";
+my $jobids = "";
+my @jjlist = ();
+my $numjobs = 0;
+my $end   = `date -I`; chomp($end);  # default
+my $start = `date -I -d "15 days ago $end"`; chomp($start); #default
+
+# exit if no node number
+if (! $opt_n) {
+   print "Must specify node number.  Exiting...\n";
+   exit;
+}
+
+# read gazebo.conf file to get path to log files
+my $pwd = dirname(abs_path("$0")); chomp($pwd);
+unless ( do "$pwd/get_gazebo_config") { die "get_gazebo_config failed!"; }
+our %gazebo_conf;
+my $TRD  = $gazebo_conf{'Target_Results_Dir'};
+my $cs   = $gazebo_conf{'Cluster_Segments'};
+my $GH   = $gazebo_conf{'Gazebo_Home'};
+my $GB   = $ENV{'GZBIN'};
+
+# use end date if specified
+if ( "$opt_e" ne "" ) {
+   $end = `date -I -d "$opt_e"`; chomp($end);
+}
+
+# use start date if specified
+if ( "$opt_s" ne "" ) {
+   $start = `date -I -d "$opt_s"`; chomp($start);
+}
+
+# use jobid if specified
+if ( "$opt_j" ) {
+   $jobid = $opt_j;
+}
+
+print "\n *** Node Information Synopsis, Node $node ***\n"; 
+print "\tAnalysis between $start and $end ...\n\n";
+
+if ( "$opt_l" ) {
+    @logdirlist = `cat $opt_l`;
+} else {
+    @logdirlist = `$GB/find_test_dirs -s $start -e $end`;
+}
+
+
+print "JobID\t  Start Time                   Job Name\n";
+print "=====\t  ==========                   ========\n";
+
+if (! $opt_j) {
+  foreach $logdir (@logdirlist) {
+    chomp $logdir;
+    my $log = "$logdir/*.log";
+    $thisjobnodes = `grep '<nodes>' $log`; chomp $thisjobnodes;
+    $thisjobnodes =~ s/<nodes>//g;
+    $thisjobnodes =~ s/$cs/ /g;
+    $thisjobnodes .= " ";
+    $node_exact = " $node ";
+    if ( $thisjobnodes =~ $node_exact ) {
+        $jj = `grep '<JobID>' $log`; chomp $jj;
+        @jjlist = split (/ /, $jj);
+        print "$jjlist[1]\t";
+        $sraw = `grep '<start>' $log`; chomp $sraw;
+        @slist = split (/ /, $sraw);
+        print "  $slist[1]";
+        $tnraw = `grep '<testName>' $log`; chomp $tnraw;
+        @tnlist = split (/ /, $tnraw);
+        print "     $tnlist[1]\n";
+        ++$numjobs;
+    }
+  }
+  print "\n$numjobs jobs ran on node $node\n\n";
+} else {
+  foreach $logdir (@logdirlist) {
+    chomp $logdir;
+    my $log = "$logdir/*.log";
+    $thisjobnodes = `grep '<nodes>' $log`; chomp $thisjobnodes;
+    $thisjobnodes =~ s/<nodes>//g;
+    $thisjobnodes =~ s/$cs/ /g;
+    $thisjobnodes .= " ";
+    $node_exact = " $node ";
+    if ( $thisjobnodes =~ $node_exact ) {
+        $jj = `grep '<JobID>' $log`; chomp $jj;
+        @jjlist = split (/ /, $jj);
+        if ( "$jjlist[1]" == "$jobid" ) {
+            print "$jjlist[1]\t";
+            $sraw = `grep '<start>' $log`; chomp $sraw;
+            @slist = split (/ /, $sraw);
+            print "  $slist[1]";
+            $tnraw = `grep '<testName>' $log`; chomp $tnraw;
+            @tnlist = split (/ /, $tnraw);
+            print "     $tnlist[1]\n";
+            exit;
+        }
+    }
+  }
+}
+
+sub usage {
+    print "\n\n";
+    print "usage: node_info \n";
+    print "           -h help \n";
+    print "           -n 'node number' -- required\n";
+    print "           -j 'job id'\n";
+    print "           -s 'Analyze jobs starting on yyyy-mm-dd, default is last 15 days'\n";
+    print "           -e 'Analyze jobs ending on yyyy-mm-dd, default is now'\n";
+    print "           -l 'File listing paths to log files'\n\n\n";
+}

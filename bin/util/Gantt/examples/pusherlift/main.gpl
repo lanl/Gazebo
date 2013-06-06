@@ -1,0 +1,5 @@
+set terminal postscript eps color solid
+set size ratio 0.4
+set output "pusherlift.eps"
+load "pusherlift.gpl"
+unset output

@@ -1,0 +1,1 @@
+See http://www.colorbrewer.org for suggestions for distinctive color legends.

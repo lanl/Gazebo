@@ -1,0 +1,114 @@
+proc Pusher(chan push?, pusher!: bool) =
+|[ var x: bool = false, ts: real
+ , mode Ret   = ( push?x; (x -> skip; goExt | not x -> skip; Ret) )
+      , goExt = ( ts:= time; delay 2.0
+                ; !!"Pusher", "\t", ts, "\t", time, "\t", "extend", "\n" //gantt
+                ; pusher!true
+                ; Ext
+                )
+      , Ext   = ( push?x; (not x -> skip; goRet | x -> skip; Ext) )
+      , goRet = ( ts:= time; delay 3.0
+                ; !!"Pusher", "\t", ts, "\t", time, "\t", "retract", "\n" //gantt
+                ; pusher!false
+                ; Ret 
+                )
+:: Ret
+]|
+
+proc Lift(chan down?, up?, lift!: bool) =
+|[ var x: bool = false, y: bool = false, ts: real
+ , mode Down   = ( (down?x | up?y)
+                   ; ( not x and     y -> skip; goUp
+                     |     x or  not y -> skip; Down
+                     )
+                 )
+      , goUp   = ( ts:= time; delay 3.0
+                 ; !!"Lift", "\t", ts, "\t", time, "\t", "ascend", "\n" //gantt
+                 ; lift!true
+                 ; Up 
+                 )
+      , Up     = ( (down?x | up?y)
+                   ; ( not y and     x -> skip; goDown
+                     |     y or  not x -> skip; Up
+                     )
+                 )
+      , goDown = ( ts:= time; delay 4.0
+                 ; !!"Lift", "\t", ts, "\t", time, "\t", "descend", "\n" //gantt
+                 ; lift!false
+                 ; Down 
+                 )
+:: Down
+]|
+
+proc Product(chan place?, product!: bool) =
+|[ var x: bool = false, ts: real
+ , mode Idle = (place?x; Busy)
+      , Busy = ( ts:= time; delay 2.0
+               ; !!"Product", "\t", ts, "\t", time, "\t", "place", "\n" //gantt
+               ; product!true
+               ; Idle
+               )
+:: Idle
+]|
+
+proc Supervisor(chan push!, down!, up!, place!, pusher?, lift?, product?: bool) =
+|[ var x: bool = false, y: bool = false, z: bool = false
+ , mode s010s1010s0s0s0s1s1s1 = ( down!true ; s010s1110s0s0s0s3s1s1
+                                | pusher?x ; s001s1010s0s0s0s1s2s1
+                                | up!false ; s010s0010s0s0s0s2s1s1
+                                )
+      , s010s1110s0s0s0s3s1s1 = ( pusher?x ; s001s1110s0s0s0s3s2s1
+                                | up!false ; s010s0110s0s0s0s0s1s1
+                                )
+      , s001s1010s0s0s0s1s2s1 = ( down!true ; s001s1110s0s0s0s3s2s1
+                                | up!false ; s001s0010s0s0s0s2s2s1
+                                )
+      , s010s0010s0s0s0s2s1s1 = ( down!true ; s010s0110s0s0s0s0s1s1
+                                | pusher?x ; s001s0010s0s0s0s2s2s1
+                                )
+      , s001s0101s0s1s0s0s1s1 = ( down!false ; s001s0001s0s3s0s0s1s1
+                                | up!true ; s001s1101s0s2s0s0s1s1
+                                )
+      , s001s0001s0s3s0s0s1s1 = ( up!true ; s001s1001s0s0s0s0s1s1 )
+      , s001s1101s0s2s0s0s1s1 = ( down!false ; s001s1001s0s0s0s0s1s1 )
+      , s001s1110s0s0s0s3s2s1 = ( up!false ; s001s0110s0s0s0s0s2s1 )
+      , s001s0110s0s0s0s0s2s1 = ( lift?y ; s001s0101s0s0s0s0s0s1 )
+      , s101s1010s0s0s2s0s1s1 = ( pusher?x ; s110s1010s0s0s2s1s1s1 )
+      , s110s1010s0s0s2s1s1s1 = ( down!true ; s110s1110s0s0s2s3s1s1
+                                | push!false ; s010s1010s0s0s0s1s1s1
+                                | up!false ; s110s0010s0s0s2s2s1s1
+                                )
+      , s001s0101s1s0s0s0s1s1 = ( product?z ; s001s0101s0s1s0s0s1s1 )
+      , s110s0010s0s0s2s2s1s1 = ( down!true ; s110s0110s0s0s2s0s1s1
+                                | push!false ; s010s0010s0s0s0s2s1s1
+                                )
+      , s110s0110s0s0s2s0s1s1 = ( push!false ; s010s0110s0s0s0s0s1s1
+                                | lift?y ; s110s0101s0s0s2s0s3s1
+                                )
+      , s001s0001s1s0s0s2s1s0 = ( down!true ; s001s0101s1s0s0s0s1s1
+                                | product?z ; s001s0001s0s1s0s2s1s0
+                                )
+      , s001s0001s0s1s0s2s1s0 = ( down!true ; s001s0101s0s1s0s0s1s1 )
+      , s001s1010s0s0s1s0s1s1 = ( push!true ; s101s1010s0s0s2s0s1s1 )
+      , s110s0101s0s0s2s0s3s1 = ( push!false ; s010s0101s0s0s0s0s3s1 )
+      , s010s0101s0s0s0s0s3s1 = ( pusher?x ; s001s0101s0s0s0s0s0s1 )
+      , s001s0010s0s0s0s2s2s1 = ( down!true ; s001s0110s0s0s0s0s2s1 )
+      , s001s0101s0s0s0s0s0s1 = ( place!true ; s001s0101s1s0s0s0s1s1 )
+      , s110s1110s0s0s2s3s1s1 = ( push!false ; s010s1110s0s0s0s3s1s1
+                                | up!false ; s110s0110s0s0s2s0s1s1
+                                )
+      , s010s0110s0s0s0s0s1s1 = ( pusher?x ; s001s0110s0s0s0s0s2s1
+                                | lift?y ; s010s0101s0s0s0s0s3s1
+                                )
+      , s001s1001s0s0s0s0s1s1 = ( lift?y ; s001s1010s0s0s1s0s1s1 )
+      , s001s0001s0s0s0s2s0s0 = ( down!true ; s001s0101s0s0s0s0s0s1
+                                | place!true ; s001s0001s1s0s0s2s1s0
+                                )
+:: s001s0001s0s0s0s2s0s0
+]|
+
+model pusherlift() =
+|[ chan push, down, up, place, pusher, lift, product: bool
+:: Supervisor(push, down, up, place, pusher, lift, product)
+|| Pusher(push, pusher) || Lift(down, up, lift) || Product(place, product)
+]|
