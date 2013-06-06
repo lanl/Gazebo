@@ -90,7 +90,7 @@ system("mkdir -p $tmpdir\n");
 system("mkdir -p $tmpdir/docs\n");	
 system("mkdir -p $tmpdir/bin\n");	
 system("mkdir -p $tmpdir/include/simple\n");	
-system("cp -a  ../docs/ATC_README $tmpdir/docs/README\n");
+system("cp -a  ../docs/README $tmpdir/docs/README\n");
 system("cp -a  ../docs/Overview $tmpdir/docs/Overview\n");
 system("cp -a  ../docs/setupAndInstall.txt $tmpdir/docs/setupAndInstall.txt\n");
 system("cp -a  ../docs/TrendData.txt $tmpdir/docs/howto-add-TrendData.txt\n");
@@ -101,7 +101,6 @@ system("cp -a  ../include/gzconfig.example $tmpdir/include/gzconfig.example\n");
 system("cp -a  ../include/runit.example $tmpdir/include/runit.example\n");
 system("cp -a  ../include/makeit.example $tmpdir/include/makeit.example\n");
 system("cp -a  ../include/test_config_example $tmpdir/include/test_config_example\n");
-system("cp -a  ../include/dbcfg $tmpdir/include/dbcfg\n");
 system(qq(rsync -a  --exclude=CVS/ ../include/simple/ $tmpdir/include/simple\n));
 
 system("echo $opts{v} > $tmpdir/docs/Version");

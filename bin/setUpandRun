@@ -411,6 +411,10 @@ else
    chmod -R 755 ${runhome}/gzlogs
 endif
 
+# Make special splunk data file from trend data.
+# This will not overwright user version of this file.
+${GZBIN}/splunk/td2splunkData ${tmplogdir}
+
 # do a little cleanup
 if (-e /tmp/nodefile$$ ) then
   rm /tmp/nodefile$$

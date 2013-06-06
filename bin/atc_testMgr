@@ -60,7 +60,9 @@ use POSIX;
 use Cwd 'abs_path';
 use File::Basename;
 use Getopt::Std;
-
+use lib $ENV{GZBIN};
+use manage_holds qw(:Both); # use manage_holds perl module
+use Data::Dumper qw(Dumper);
 # Example usage and meaning: 
 
 # "nohup atc_testMgr -u yra -C myts -D 30 -w 4 &"
@@ -272,7 +274,24 @@ do {
       print "  checking on $cs0[0]\n" if ($opt{d});
       #  alternative: $inUse = `gzjobs -u $me | grep $me | wc -l`;
       $inUse = `mdiag -j | grep $me | grep $cs0[0] | wc -l`;
-
+      
+      #feature 1026
+      my @heldjobs = &return_heldjobs($me);
+      my @returnjobarray = &check_heldjobs(@heldjobs);
+      my ( $releasehold_status_ref, $releasedjob_list_ref ) = &releaseholds(@heldjobs);
+      my @releasehold_status = @$releasehold_status_ref;
+      my @releasedjob_list = @$releasedjob_list_ref;
+      if (@releasehold_status) {
+        for my $jobid ( 0 .. $#heldjobs ) {
+        	print LOG "HeldJobs to be released: ";
+        	for my $name ( keys %{ $heldjobs[$jobid] } ) {
+        		print LOG "\t$name=$heldjobs[$jobid]{$name} ";
+        		}
+	print LOG "releasehold status is:\t @releasehold_status\n";
+        print LOG "releasejob list is:\t @releasedjob_list\n";
+        print LOG "\n";       
+        }
+      }
       # if percentage utilization is requested (opt{p}), check the system to see
       # what usage level it is running at and determine how nodes need to be filled 
       # to reach that level.
@@ -326,6 +345,7 @@ do {
 	print LOG "$seg, $time : no submission - plenty of jobs still running or queued\n";
       } elsif ( $opt{p} )  {
 
+
         # determine how to fill(pack) the different sizes of each test type into the
         # available node space to be filled. 
         my $submitList_r = bld_submitList();
@@ -350,7 +370,7 @@ do {
 
             # clean up any prior moab output before starting new jobs
             `atc_clean >& /dev/null`;
-  
+
             # submit the test suite. Should look something like:
             #`atc_run -u $seg -b -c $count -J 'job submit line' >> $log`;
             `$cmd`;
@@ -504,7 +524,7 @@ sub calc_node_fill {
     chomp;
     my $line = $_;
 ## debug line
-    print "read in  -> $line\n";
+#    print "read in  -> $line\n";
     if ( $line =~ /name:=([^\s]+).+nodes:=(\d+)/ ) {
       $testName = $1;
       $nodeCnt = $2;
@@ -518,7 +538,7 @@ sub calc_node_fill {
       # print "name = $testName, nodes - $nodeCnt pct - $pct\n";
     }
   }
-  print " *** test suite input complete ***\n\n";
+#  print " *** test suite input complete ***\n\n";
   close(FILE);
 
   # calculate number of nodes to fill per test name
