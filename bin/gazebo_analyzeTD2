@@ -125,7 +125,11 @@ my %mean = {};
 for my $type ( keys %sum ) {
   for my $name ( keys %{$sum{$type}} ) {
     $mean{$type}{$name} =  $sum{$type}{$name}/$n{$type}{$name};
-    $ans{$type}{$name} =  sqrt(($sumsq{$type}{$name} - $sum{$type}{$name} ** 2 / $n{$type}{$name})/($n{$type}{$name}-1));
+    if ($n{$type}{$name} eq 1 ) {
+     $ans{$type}{$name} = 0;
+    } else {
+      $ans{$type}{$name} =  sqrt(($sumsq{$type}{$name} - $sum{$type}{$name} ** 2 / $n{$type}{$name})/($n{$type}{$name}-1));
+    }
   }
 }
 
