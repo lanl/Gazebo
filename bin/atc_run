@@ -181,6 +181,7 @@ chomp($Now);
 my $runlogdir;
 my $drmlogdir;
 $outputdir = $gazebo_conf{"Target_Results_Dir"};
+$ENV{'GZ_RESULTSDIR'} = $outputdir;
 if ( ! $opts{d} ) {
    if (! -e "$outputdir" ) { system("mkdir -p $outputdir\n"); }
    $runlogdir = "$outputdir/runlogdir";
@@ -716,9 +717,9 @@ sub submit_test {
    $ENV{'NPES'}           = "$npes";
    $ENV{'GZ_NPES'}        = "$npes";
    $ENV{'GZ_NNODES'}        = "$nnodes";
-#   $ENV{'GZ_CU'}          = "$cu"; # name of segment or list of segments with "-"s
    $ENV{'GZ_CU'}          = "$seg_name"; # name of segment or list of segments with "-"s
    $ENV{'GZ_ATC'}         = "yes";	
+   $ENV{'GZ_MACH'}        = $gazebo_conf{"Cluster_Name"};
    $ENV{'GZ_RESOURCEMGR'} = $gazebo_conf{"Job_Dispatcher"};
    $ENV{'GZ_SITE'}	  = $gazebo_conf{"Site"};
 
@@ -995,7 +996,7 @@ sub submit_test {
             $ENV{'SWL_OUTPUT_FILE'}  = qq($swl_startdir/$swl_test_name);
 
             $swl_env_list =
-"SWL_JOB,SWL_BATCH_TYPE,SWL_JOB_NAME,SWL_STARTDIR,REGRESSION_FLAG,GAZEBO_OUTPUTDIR,GZ_SITE,GZ_RESOURCEMGR,COMPILER,MPILIB,GZ_RUNHOME,GZHOME,GZ_TEST_PARAMS,GZ_CMD,GZ_DBINSERT,GZ_ATC,GZGRP,GZ_CU,GZ_TESTNAME,GZ_TESTEXEC,SWL_OUTPUT_FILE";
+"SWL_JOB,SWL_BATCH_TYPE,SWL_JOB_NAME,SWL_STARTDIR,REGRESSION_FLAG,GAZEBO_OUTPUTDIR,GZ_SITE,GZ_RESOURCEMGR,COMPILER,MPILIB,GZ_RUNHOME,GZHOME,GZ_TEST_PARAMS,GZ_CMD,GZ_DBINSERT,GZ_ATC,GZ_CU,GZ_TESTNAME,GZ_TESTEXEC,SWL_OUTPUT_FILE";
 	    if ("$ENV{'JOB_CYCLE_LIST'}" ne "") {
                 $swl_env_list = "$swl_env_list,JOB_CYCLE_LIST";
 	    }
@@ -1368,24 +1369,24 @@ JOBDONE:
 
                # move moab generated output files (stderr/stdout) into test log directory
 
-#print "Debug: looking for jobid - $sjid in $outputdir\n";
-                  $tmpdir = `ls -1 $outputdir | grep $sjid`; # target results dir
+#print "DebugAA: looking for jobid - $sjid in $outputdir/drmlogdir\n";
+                  $tmpdir = `ls -1 $outputdir/drmlogdir | grep $sjid`; # target results dir
                   if ( ( $tmpdir =~ /OU/ ) && ( $tmpdir =~ /ER/ ) ||
                        ( $tmpdir =~ /\.e$sjid/ ) && ( $tmpdir =~ /\.o$sjid/ ) )
                   {
-#print "Debug: found $tmpdir\n";
+#print "DebugAA: found $tmpdir\n";
                      @nada = split "\n",$tmpdir;
                      foreach $x ( @nada ) {
                         if ( ( $x =~ /OU/ ) || ( $x =~ /\.o$sjid/)) {
                            chomp($x);
-		           $tmpdir = `grep -a "tld" $outputdir/$x`;
+		           $tmpdir = `grep -a "tld" $outputdir/drmlogdir/$x`;
                            last;
                         }
                      }
                      chomp $tmpdir;
                      $tmpdir =~ /^tld -> (.*)/;
                      $tmpdir = $1;
-#print "tld - $tmpdir\n";
+#print "tld -> $tmpdir\n";
 
                      # check for anomolous condition of null tld path
                      if ( "$tmpdir" eq "" ) {
@@ -1406,16 +1407,6 @@ I3:
                      $interrupt = 0;
 
                      my $tn = $test_name{$jobid};
-#                     if ( $tn =~ /-/ ) {
-#                        my @NaDa = split '-',$test_name{$jobid};
-#                        pop @NaDa;
-#                        if ( @NaDa > 1 ) {
-#                           $tn = join '-',@NaDa;
-#                        } else {
-#                           $tn = "$NaDa[0]";
-#                        }
-#                     }
-#print "DEBUG: test name after mystery algorithm is $test_name{$jobid}\n";
 
                      # find out where the final test results will be placed
                      $x = `$ENV{'GZBIN'}/gz_glean -g "ATC" -p -t "$tn" -f "$tmpdir"`;
