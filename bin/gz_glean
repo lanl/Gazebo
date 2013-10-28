@@ -278,6 +278,11 @@ unless ( $opts{d} ) {
          print "*** Unable to write to $path/$dirname\n";
          exit (-1);
       }
+      $status = system("chmod 664 $path/$dirname/*\n");
+      if ( $status ) { 
+        print "$0: *** System() returned $status when attempting to chmod files in $path/$dirname, Nothing done. ***\n";
+        exit(-1);
+      }
 
 } else {	# do nothing mode, just print what we wanted to do
    if ( -w "$path/$dirname" ) {		# make sure directory is writable 
