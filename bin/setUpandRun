@@ -134,11 +134,10 @@ endif
 # place preserve flag in runhome directory if
 # preserve mode requested by user
 set preserveFile = "${GZ_RUNHOME}/gz_preserve"
-set dontpreserveFile = "${GZ_RUNHOME}/gz_dontpreserve"
 if (! $?GZ_CLEANUP) then
   echo junk > $preserveFile
 else
-  echo junk > $dontpreserveFile
+  rm -f $preserveFile
 endif
 
 
@@ -316,6 +315,7 @@ echo "${tsId}" > ${tmplogdir}/machine
 echo "<npes> ${npes}" >> ${tmplogdir}/machine
 
 echo "<segName> ${tsId}" > ${logfile}
+echo "<machine> ${GZ_MACH}" >> ${logfile}
 echo "<testName> ${testName}" >> ${logfile}
 echo "<testExec> ${testExec}" >> ${logfile}
 echo "<npes> ${npes}" >> ${logfile}
