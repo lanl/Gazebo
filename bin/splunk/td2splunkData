@@ -56,8 +56,9 @@
 
 #
 # This script will transform trend data from the logfile into
-# data meant from Splunk consumption. 
-# The results are saved/appended into a file called my.splunkdata 
+# data meant for Splunk consumption. 
+
+# The results are saved into a file called my.splunkdata 
 #
 
 use File::Basename;
@@ -86,10 +87,14 @@ our %opt;
   my $ldir = shift;
   chomp $ldir;
 
-  # exit if splunk data file exists
+  # if a splunk dat file exists, catenate it to the end of 
+  # the splunkdata.log file in the results space and exit.
   my @arr = glob("$ldir/*.splunkdata");
   if ( @arr > 0 ) {
-    print ".splunkdata file exits, exiting!\n";
+    if ( $ENV{'GZ_RESULTSDIR'} ) {
+      `cat $arr[0] >> $ENV{'GZ_RESULTSDIR'}/splunkdata.log`;
+    }
+    print ".splunkdata file exits, no more work to do!\n";
     exit;
   }
 
@@ -100,9 +105,21 @@ our %opt;
   # write to splunk data file
   open( SD, ">$ldir/my.splunkdata") or die "$prog: Failed to open splunk data file $!\n";
 
+  # these next lines will only work in the context of a real Gazebo job, so unless the
+  # GZ_RESULTSDIR is defined don't try to run this.
+  if ( $ENV{'GZ_RESULTSDIR'} ) {
+    open( RF, ">>$ENV{'GZ_RESULTSDIR'}/splunkdata.log");
+  }
+
   my $day = "";
   my $time = "";
   my $tn = "";
+  my $mn = "";
+  my $pl = "";
+  my $nl = "";
+  my $nc = "";
+  my $nn = "";
+  my $sn = "";
   my $job_id = "";
   my $td_name;
   my %td = ();
@@ -115,6 +132,34 @@ our %opt;
 #       print "DEBUGGING: input=$_\n";
 #        chop( $_  );
 
+      # extract target machine name
+      if (/^<machine> /) {
+        $mn = $';
+        chomp $mn;
+        next;
+      }
+
+      # extract target segment name
+      if (/^<segName> /) {
+        $sn = $';
+        chomp $sn;
+        next;
+      }
+
+      # extract test name
+      if (/^<testName> /) {
+        $tn = $';
+        chomp $tn;
+        next;
+      }
+
+      # extract PE (cores) name
+      if (/^<npes> /) {
+        $nc = $';
+        chomp $nc;
+        next;
+      }
+
       # get job id to include in splunk data
       if ( /^<JobID> / ) {
 	 $job_id = $';
@@ -122,10 +167,20 @@ our %opt;
 	 next;
       } 
 
-      # extract test name
-      if (/^<testName> /) {
-        $tn = $';
-        chomp $tn;
+      # extract node list 
+      if (/^<nodes> /) {
+        $nl = $';
+        chomp $nl;
+        $nn++ while $nl =~ /\S+/g;
+        $nl =~ s/\s+/,/g;
+        next;
+      }
+
+      # extract the parameter list
+      if (/^<params> /) {
+        $pl = $';
+        chomp $pl;
+        $pl =~ s/\s+/__/g;
         next;
       }
 
@@ -176,9 +231,21 @@ our %opt;
 
     # no dashes in values
     chop $td_list;
-    print SD "$date $time testname=$tn jobId=$job_id $td_list results=$results\n";
+    my $rl;
+    if ($mn ne "") {
+      $rl = qq($date $time TestName=$tn JobId=$job_id MachineName=$mn SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
+    } else {
+      $rl = qq($date $time TestName=$tn JobId=$job_id SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
+    }
+    print SD $rl;
     close( LOG );
     close( SD );
+    # these next lines will only work in the context of a real Gazebo job, so unless the
+    # GZ_RESULTSDIR is defined don't try to run this.
+    if ( $ENV{'GZ_RESULTSDIR'} ) {
+      print RF $rl;
+      close( RF );
+    }
 
 exit (0);
 
