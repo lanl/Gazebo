@@ -1,3 +1,2 @@
-This directory is populated with utility scripts and programs that are used by other
-software in the Gazebo stack. As a general rule these programs are not used directly by
-people, but are needed by other software to work.
+This directory is populated with utility programs that are used by other
+software in the Gazebo stack or as helper scripts with common user tasks.
