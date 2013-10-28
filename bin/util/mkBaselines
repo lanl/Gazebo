@@ -1,0 +1,132 @@
+#!/usr/bin/perl
+#
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2013, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2013. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# creates baseline averages of all trenddata 
+# example use:
+# atc_results -s 2013-08-14 -T | sed 's/\S*\(jid\|2013\|:\)\S*//g' | mkBaselines
+#
+# original author: Craig Idler
+
+#require "getopts.pl";
+use File::Basename;
+use Sys::Hostname;
+our $host = hostname;
+
+use Cwd 'abs_path';
+$pwd = dirname( abs_path("$0") );
+chomp($pwd);
+
+use Getopt::Std;
+our %opt;
+$opt{t} = "";
+# setup arguments as switches or ones that require strings  
+getopts( "t", \%opt);
+
+my $tn;
+my $me = `whoami`;
+chomp $me;
+
+# print usage if h option set
+if ($opt{h}) { usage(); exit; }
+
+my $today = `date '+%Y-%m-%d'`;
+chomp $today;
+
+  my %numVals = ();
+  my %tdVal = ();
+  my %tdUnits = ();
+  my $testname = "";
+
+
+  while (<STDIN>) {
+    chomp $_;
+    next unless /\)/;
+#    s/\S*\(jid\|2013\|:\)\S*//g; 
+#print "-> $_ \n";
+    my @tmpstr = split( /\) /, $_ );
+    my $testname = $tmpstr[0];
+    $testname =~ s/\t//;
+    $tmpstr[1] =~ s/^\s+//; #remove leading spaces
+    $tmpstr =~ s/\s+$//; #remove trailing spaces
+    my @tdstuff = split( " ", $tmpstr[1]);
+    chomp $tdstuff[1];
+#print "  add - $testname,$tdstuff[0] - $tdstuff[1]\n";
+    $tdVal{$testname}{$tdstuff[0]} += $tdstuff[1]; 
+    $tdUnits{$testname}{$tdstuff[0]} = $tdstuff[2] unless ( $tdstuff[2] eq ""); 
+    if (exists $numVals{$testname}{$tdstuff[0]}) { 
+      $numVals{$testname}{$tdstuff[0]}++; 
+    } else {
+      $numVals{$testname}{$tdstuff[0]} = 1; 
+    }
+
+  }
+
+foreach my $tn (sort keys %tdVal) {
+    print "$tn):\n";
+    while (my ($key, $value) = each %{$tdVal{$tn} } ) {
+        $value = $value / $numVals{$tn}{$key};
+        print "\t $key = $value $tdUnits{$tn}{$key}\n";
+    }
+}
+
+sub usage {
+
+    print "\n\n";
+    print "usage: $0 \n";
+    print "              -h help \n";
+    print "\n\n";
+
+}
