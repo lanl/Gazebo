@@ -239,7 +239,7 @@ if ( @moab_jids > 0 ) {
 
 # Clean up orphaned moab files directory.
 # oldays is arbitrary, just something to keep a cap on it.
-  my $oldays = 7;
+  my $oldays = 3;
   while (<$drm_orph_dir/*>) {
     if (-f && $oldays < -M _) {
       if ($opts{d}) {
@@ -251,7 +251,7 @@ if ( @moab_jids > 0 ) {
   }
 
 
-# Clean up working space(s) directories older than 48 hours. 
+# Clean up working space(s) directories older than 24 hours. 
 # This should clean up jobs that are bombing out before completion or timing out
 #foreach $d (`find $ENV{'GZHOME'}/test_exec/*/working_space -maxdepth 2 -name gz_dontpreserve -mtime +2 -print`) {
 
