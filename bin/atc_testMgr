@@ -5,10 +5,10 @@
 #  Disclaimer and Notice of Copyright 
 #  ==================================
 #
-#  Copyright (c) 2012, Los Alamos National Security, LLC
+#  Copyright (c) 2013, Los Alamos National Security, LLC
 #  All rights reserved.
 #
-#  Copyright 2012. Los Alamos National Security, LLC. 
+#  Copyright 2013. Los Alamos National Security, LLC. 
 #  This software was produced under U.S. Government contract 
 #  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
 #  which is operated by Los Alamos National Security, LLC for 
@@ -132,12 +132,22 @@ if ($opt{h}) {
   exit;
 }
 
-# Best to run one instance at a time.
+# Make sure a target segment (cluster abbreviation)  name is supplied
+if ( $opt{u} ) {
+    $cn = $opt{u};
+    @cn = split (",", $cn);
+    print "Segment list to target: @cn\n";
+} else {
+    print "Must supply a target segment to test.  Exiting...\n";
+    exit;
+}
+
+# Best to run only one instance per target cluster.
 # So, check for a running instance of this test manager 
-# and try to kill it if the k option selected.
+# and die unless the k option selected.
   my $mypid = $$;
   my $oldProcID = 0;
-  my $info = `ps x | egrep $0 | egrep -v "grep|vi" | egrep -v $mypid`;
+  my $info = `ps x | egrep $0 | egrep $cn | egrep -v "grep|vi" | egrep -v $mypid`;
   if ($info =~ m/$0/) {
     # get the process id of the old process
     if ($info =~ /^\s+(\d+)\s/) { $oldProcID = $1; }
@@ -151,18 +161,9 @@ if ($opt{h}) {
     }
   }
 
-# Make sure a target segment (cluster abbreviation)  name is supplied
-if ( $opt{u} ) {
-    $cn = $opt{u};
-    @cn = split (",", $cn);
-    print "Segment list to target: @cn\n";
-} else {
-    print "Must supply a target segment to test.  Exiting...\n";
-    exit;
-}
 
 # Flag to force test suite to be submitted regardless of
-# my existing running or queued jobs.
+# existing running or queued jobs.
 # Not applicable when using "p" option. 
 my $check = 1;
 if ( $opt{f} ) {
@@ -382,6 +383,7 @@ do {
           # Launch jobs in the normal way where atc_run just reads the whole test suite file
           my $cmd;
           $cmd =  "atc_run -u $seg -b ";
+          $cmd =  $cmd . "-A '$opt{A}' " if ($opt{A});
           $cmd =  $cmd . "-c $opt{c} " if ($opt{c});
           $cmd =  $cmd . "-C $opt{C} " if ($opt{C});
           $cmd =  $cmd . "-q $opt{q} " if ($opt{q});
