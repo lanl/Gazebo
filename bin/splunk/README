@@ -1,11 +1,15 @@
-Gazebo uses Splunk as a data analysis tool. Splunk expects events in a much different format
-than the standard gazebo output log. For compatiblity purposes the td2splunkData utility will generate 
-a my.splunkdata file from any trend data that exists in the Gazebo output log  and put it into
-native Splunk format.
+This directory contains software specific to SPLUNK related work.  Splunk is a commercial product and is
+not released as part of Gazebo. However, Gazebo can be used without a Splunk infrastructure in place. 
 
-Splunk is a commercial product and is not released as part of Gazebo. However, Gazebo can be use just
-fine without a Splunk infrastructure in place. 
+At LANL, Gazebo also uses Splunk as a data analysis tool. Splunk expects data in a much different format
+than the standard Gazebo output log. The td2splunkData utility will read the Gazebo log file and create
+a my.splunkdata file placing in it native Splunk format records. Basically, a few noteworthy 
+values are saved, along with all the trenddata values, and written as key value pairs into this new file.
 
-td2splunkData will not overwrite an existing *.splunkdata file.  So, to see how this works:
-1) remove the my.splunkdata file
-2) run "./td2splunkData ."
+The td2splunkData script will run at the end of each Gazebo job. However, td2splunkData will not overwrite
+an existing *.splunkdata file.  This allows the test developer, if so inclined, to generate their own splunk data.
+
+- to see how td2splunkData works:
+1) remove the *.splunkdata file from the CWD, if the file exists.
+2) run "./td2splunkData <target_log_dir>".  A "." will work if the log file exists in the CWD.
+3) a my.splunkdata file is generated in the CWD

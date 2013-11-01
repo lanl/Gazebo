@@ -1,5 +1,6 @@
 #!/usr/bin/perl
 
+
 #  ###################################################################
 #
 #  Disclaimer and Notice of Copyright 
@@ -55,7 +56,7 @@
 
 
 #
-# This script will transform trend data from the logfile into
+# This script will transform a Gazebo logfile into
 # data meant for Splunk consumption. 
 
 # The results are saved into a file called my.splunkdata 
@@ -75,6 +76,7 @@ my %attr =
    AutoCommit => 1
 );
 
+use strict;
 
 use Getopt::Std;
 our %opt;
@@ -87,8 +89,9 @@ our %opt;
   my $ldir = shift;
   chomp $ldir;
 
-  # if a splunk dat file exists, catenate it to the end of 
-  # the splunkdata.log file in the results space and exit.
+  # If a local splunkdata file exists, catenate it to the end of 
+  # the global splunkdata.log file in the results space and exit.
+  # The splunkdata.log file is the file that Splunk is indexing.
   my @arr = glob("$ldir/*.splunkdata");
   if ( @arr > 0 ) {
     if ( $ENV{'GZ_RESULTSDIR'} ) {
@@ -99,10 +102,10 @@ our %opt;
   }
 
   # read from existing logfile
-  my $lf = glob("$ldir/*.log");
-  open( LOG, "<$lf") or die "$prog: Failed to open log $lf, $!\n";
+  my @lf = glob("$ldir/*.log");
+  open( LOG, "<$lf[0]") or die "$prog: Failed to open log file $lf[0], $!\n";
 
-  # write to splunk data file
+  # create handle for test specific local copy of the splunk data
   open( SD, ">$ldir/my.splunkdata") or die "$prog: Failed to open splunk data file $!\n";
 
   # these next lines will only work in the context of a real Gazebo job, so unless the
@@ -111,8 +114,10 @@ our %opt;
     open( RF, ">>$ENV{'GZ_RESULTSDIR'}/splunkdata.log");
   }
 
-  my $day = "";
+  my $date = "";
   my $time = "";
+  my $edate = "";
+  my $etime = "";
   my $tn = "";
   my $mn = "";
   my $pl = "";
@@ -227,15 +232,25 @@ our %opt;
         }
         next;
       }
+
+      # get end time to use in splunk data 
+      if( /^<end> / ) {
+         my $end = $';
+         chomp $end;
+         ($edate, $etime) = split("T", $end); 
+         $etime =~ s/-.*//;
+         next;
+      }
+
     } 
 
     # no dashes in values
     chop $td_list;
     my $rl;
     if ($mn ne "") {
-      $rl = qq($date $time TestName=$tn JobId=$job_id MachineName=$mn SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
+      $rl = qq($date $time EndDate=$edate EndTime=$etime TestName=$tn JobId=$job_id MachineName=$mn SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
     } else {
-      $rl = qq($date $time TestName=$tn JobId=$job_id SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
+      $rl = qq($date $time EndDate=$edate EndTime=$etime TestName=$tn JobId=$job_id SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
     }
     print SD $rl;
     close( LOG );
