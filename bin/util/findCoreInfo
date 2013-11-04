@@ -1,0 +1,27 @@
+#!/bin/tcsh
+#
+# script that displays CPU/Socket/Core architecture of node this is run on.
+#
+
+set hn = `hostname | awk -F "." '{print $1}'`
+echo ""
+
+set mn = `cat /proc/cpuinfo | grep "model name" | sort | uniq`
+
+# find number of logical cpu or cores
+set vc = `cat /proc/cpuinfo  | grep processor | wc -l`
+
+# find number of sockets
+set ns = `cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l`
+
+# find number of physical cores
+set nc = `cat /proc/cpuinfo | egrep "core id|physical id" | tr -d "\n" | sed s/physical/\\nphysical/g | grep -v ^$ | sort | uniq | wc -l`
+
+# cores per socket
+@ cs =`echo ${nc}/${ns} | bc`
+
+echo "For node $hn :"
+echo "  CPU - $mn"
+echo "  $ns physical sockets"
+echo "  $nc total cores/cpus ($cs per socket)"
+echo "  $vc logical cores/cpus (maybe be larger than total cores if hyperthreading is enabled)"
