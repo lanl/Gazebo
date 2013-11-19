@@ -1,0 +1,777 @@
+#!/usr/bin/python
+
+#  ###################################################################
+#
+#  Disclaimer and Notice of Copyright
+#  ==================================
+#
+#  Copyright (c) 2013, Los Alamos National Security, LLC
+#  All rights reserved.
+#
+#  Copyright 2013. Los Alamos National Security, LLC.
+#  This software was produced under U.S. Government contract
+#  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
+#  which is operated by Los Alamos National Security, LLC for
+#  the U.S. Department of Energy. The U.S. Government has rights
+#  to use, reproduce, and distribute this software.  NEITHER
+#  THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES
+#  ANY WARRANTY, EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY
+#  FOR THE USE OF THIS SOFTWARE.  If software is modified to
+#  produce derivative works, such modified software should be
+#  clearly marked, so as not to confuse it with the version
+#  available from LANL.
+#
+#  Additionally, redistribution and use in source and binary
+#  forms, with or without modification, are permitted provided
+#  that the following conditions are met:
+#  -  Redistributions of source code must retain the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer.
+#  -  Redistributions in binary form must reproduce the
+#     above copyright notice, this list of conditions
+#     and the following disclaimer in the documentation
+#     and/or other materials provided with the distribution.
+#  -  Neither the name of Los Alamos National Security, LLC,
+#     Los Alamos National Laboratory, LANL, the U.S. Government,
+#     nor the names of its contributors may be used to endorse
+#     or promote products derived from this software without
+#     specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC
+#  AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#  IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS
+#  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+#  OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+#  OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+#  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+#  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+#  OF SUCH DAMAGE.
+#
+#  ###################################################################
+
+# description: mechanism to archive output log data to HPSS (LANL only) 
+# usage: gzarchive -h 
+
+# Michael Mason
+# HPC-3
+# updated 3/18/13
+
+import os
+import time
+import sys
+from optparse import OptionParser
+import subprocess
+import tarfile
+import shutil
+
+# check if only one options is set
+def oneSet(month, day, fileday):
+    #print "oneSet: ", month, day, fileday
+    # only month is set
+    if month is not None and day is None and fileday == -1:
+        #print "Month True"
+        return True
+    # only day is set
+    elif month is None and day is not None and fileday == -1:
+        #print "Day True"
+        return True
+    # only filedays is set
+    elif month is None and day is None and fileday >= 0:
+        #print "Fileday True"
+        return True
+    # more than one option was set
+    else:
+        return False
+## end oneSet
+
+# create a tar file will all the data from the directories
+def tarUpFiles(dirs):
+    if options.verbose:
+        print "[verbose] Start tar procedure"
+
+    print
+    # if user gave a tar file name and location use that otherwise create one
+    if options.tarLocation != "":
+        tarFileName = options.tarLocation
+    else:
+        tarFileName = "/tmp/gzTarFile-" + str(int(time.time())) + ".tar.gz"
+
+    print "Creating tar file", tarFileName, "This may take a few minutes..."
+
+    if options.dryRun:
+        print "This is a Dry-Run no tar file will be created!"
+        if options.verbose:
+            print "[verbose] The file", tarFileName, "would have been created."
+            print "[verbose] The following files would have been added to the tarfile:"
+            for dir in dirs:
+                print dir,
+            print
+    else:
+        # create the tar file
+        try:
+            tar = tarfile.open(tarFileName, "w:gz")
+        except:
+            print "Error creating tar file"
+            return None
+
+        if options.verbose:
+            print "[verbose] tar file has been opened"
+
+        # archive each file
+        for dir in dirs:
+            try:
+                tar.add(dir)
+            except:
+                print "Error adding file to tar file:", dir
+                print "This may be a permissions problem."
+                print "Stopping tar file creation. No files will be deleted or archived!"
+                return None 
+            else:
+                print "files add to tar from:", dir
+
+        if options.verbose:
+            print "[verbose] Done adding files to the tar."
+
+        # close the tar file
+        try:
+            tar.close()
+        except:
+            print "Error closing tar file. No files will be deleted or archived!"
+            return None
+
+        if options.verbose:
+            print "[verbose] Tar file has been closed."
+
+    # tar file is made return it's name
+    print "Tar file done."
+    return tarFileName
+## end tarUpFiles
+
+def archiveFiles(tarFile,dirs):
+    if options.verbose:
+        print "[verbose] Start archive procedure"
+    print
+
+    if options.dryRun:
+        print "This is a Dry-Run files will not be archived!"
+        if options.verbose:
+            print "[verbose] Would have stored", str(tarFile), "to", str(options.HPSSLocation)
+            if options.keepTarfile:
+                print "[verbose] Would not have deleted the tar file:", str(tarFile)
+            else:
+                print "[verbose] Would have deleted the tar file:", str(tarFile)
+            if options.delFiles:
+                print "[verbose] Would have deleted the following directories:"
+                for dir in dirs:
+                    print "[verbose] Would have deleted:",dir
+            else:
+                print "[verbose] Would not have deleted any directories."
+    else:
+        # if the tar file was created archive it
+        if tarFile is None:
+            print "No tar file, cannot archive or delete files."
+        else:
+            # archive but don't delete the tar file
+            if options.keepTarfile:
+                psiLine = ["psi","store",str(tarFile) + ":" + str(options.HPSSLocation) + str(tarFile.split('/')[-1])]
+            # archive and delete the tar file
+            else:
+                psiLine = ["psi","store","--rm",str(tarFile) + ":" + str(options.HPSSLocation) + str(tarFile.split('/')[-1])]
+            if options.verbose:
+                print "[verbose] psi options:", str(psiLine)
+                print "[verbose] running psi"
+            # run the psiLine
+            p = subprocess.Popen(psiLine,stdout=subprocess.PIPE)
+            (psiOut,psiErr) = p.communicate()
+            if psiOut is not None:
+                print "psi output: ", psiOut
+            if psiErr is not None:
+                print "psi error: ", psiErr 
+            if options.verbose:
+                print "[verbose] Done with psi."
+            # delete files that were archived
+            if options.delFiles:
+                print "Deleting directories, this may take a few minutes..."
+                for dir in dirs:
+                    print "Deleting:", dir, ". . .",
+                    try:
+                        shutil.rmtree(dir)
+                    except:
+                        print "! ! Error deleting"
+                    else:
+                        print ". . Deleted"
+            else:
+                print "No files deleted."
+## end archiveFiles
+
+
+# get username, UID and host
+try:
+    username = os.environ['USER']
+except:
+    print "Error getting environment information, username."
+    sys.exit(1)
+defaultPath = "/usr/projects/splunk/results/" + str(username)
+
+
+# argument parsing setup 
+usage = "usage: %prog [options]"
+parser = OptionParser(usage)
+parser.add_option("-m", "--months", action="store", type="string", dest="months", 
+                  help="archive gazebo format directories YYYY-MM older than X months")
+parser.add_option("-d", "--days", action="store", type="string", dest="days", 
+                  help="archive gazebo format directories YYYY-MM-DD older than X days")
+parser.add_option("-f", "--filedays", action="store", type="int", dest="filedays", default=-1, 
+                  help="archive any file older than X days")
+parser.add_option("-p", "--path", action="store", type="string", dest="path", default=defaultPath, 
+                  help="starting path to look for gazebo files to archive, default="+defaultPath)
+parser.add_option("-n", "--noDelete", action="store_false", dest="delFiles", default=True, 
+                  help="use this option to NOT delete the files that will be archived, the default is to delete the files that will archive.")
+parser.add_option("-k", "--keepTarfile", action="store_true", dest="keepTarfile", default=False, 
+                  help="use this option to NOT delete the tarfile after it is archived, by default it will be deleted.")
+parser.add_option("-l", "--TarfileLocation", action="store", dest="tarLocation", default="", 
+                  help="Location and name of the (temporary) tarfile, default is /tmp/gzTarFile-EPOCHTIME.tar.gz.  Note use -k to keep the tarfile after archive.")
+parser.add_option("-s", "--HPSSLocation", action="store", dest="HPSSLocation", default="/hpss/gazebo/", 
+                  help="Location (directory) to store tarfile on HPSS, default is /hpss/gazebo.  Note use -k to keep the tarfile after archive.")
+parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False, 
+                  help="Print every action in detail.")
+parser.add_option("--dry-run", action="store_true", dest="dryRun", default=False, 
+                  help="Run through the steps but do not actually do anything, can be used with -v.")
+
+
+# parse options
+(options, args) = parser.parse_args()
+
+#print options
+
+# user can use months or days or filedays but only one
+if not oneSet(options.months, options.days, options.filedays):
+    print "Error: Please only use either months, days or filedays but only one."
+    sys.exit(1)
+# look for YYYY-MM formated gazebo directories
+elif options.months is not None:
+    if options.verbose:
+        print "[verbose] Using month option"
+    # parse the input
+    try:
+        year = options.months.split("-")[0]
+        month =  options.months.split("-")[1]
+    except:
+        print "Error parsing months input, format YYYY-MM given:", options.months
+        sys.exit(1)
+
+    if options.verbose:
+        print "[verbose] year month =",year,month
+        print "[verbose] Looking for directories older than", options.months ,"in",str(options.path) + "/*/gzshared"
+
+    # these are the options to send to find
+    findList = ["/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","4","-maxdepth","4","-type","d"]
+
+    if options.verbose:
+        print "[verbose] find options =",findList
+        print
+
+    # run the find command to look for directories older than options.months
+    p = subprocess.Popen(findList,stdout=subprocess.PIPE)
+    (out,err) = p.communicate()
+
+    if options.verbose:
+        print "[verbose] find output:"
+        print out
+
+    listOut = out.split()
+
+    if options.verbose:
+       print "[verbose] ", len(listOut), "directories found"
+    
+    dirToArchive = []
+    # parse the directories
+    for dir in listOut:
+        try:
+            dirList = dir.split("/")
+            dirYear = dirList[9].split("-")[0]
+            dirMonth = dirList[9].split("-")[1]
+        except:
+            print "Warning: parse error, expected YYYY-MM directory will not be archived:",dir
+        # make sure the year and month are less than or equal to the one you want
+        if dirYear < year:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+        elif dirYear == year and dirMonth <= month:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+
+    print "Directories to archive,",len(dirToArchive),":"
+
+    for dir in dirToArchive:
+        print dir
+
+    # tar up all the directories
+    tarFile = tarUpFiles(dirToArchive)
+
+    # archive and delete files
+    archiveFiles(tarFile,dirToArchive)
+
+elif options.days is not None:
+    if options.verbose:
+        print "[verbose] Using day option"
+    # parse the input
+    try:
+        year = options.days.split("-")[0]
+        month =  options.days.split("-")[1]
+        day = options.days.split("-")[2]
+    except:
+        print "Error parsing days input, format YYYY-MM-DD given:", options.days
+        sys.exit(1)
+
+    if options.verbose:
+        print "[verbose] year month day =",year,month,day
+        print "[verbose] Looking for directories older than", options.days ,"in",str(options.path) + "/*/gzshared"
+
+    # find option list
+    findList = ["/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","5","-maxdepth","5","-type","d"]
+
+    if options.verbose:
+        print "[verbose] Find options ",findList
+
+    # run the find command to look for directories older than options.months
+    p = subprocess.Popen(findList,stdout=subprocess.PIPE)
+    (out,err) = p.communicate()
+
+    if options.verbose:
+        print "[verbose] find output:"
+        print out
+
+    listOut = out.split()
+    
+    if options.verbose:
+        print "[verbose] ", len(listOut), "directories found"
+
+    dirToArchive = []
+    # parse the directories
+    for dir in listOut:
+        try:
+            dirList = dir.split("/")
+            dirYear = dirList[10].split("-")[0]
+            dirMonth = dirList[10].split("-")[1]
+            dirDay = dirList[10].split("-")[2]
+        except:
+            print "Warning: parse error, expected YYYY-MM-DD directory will not be archived:",dir
+        # make sure the year, month and day are less than or equal to the one you want
+        if dirYear < year:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+        elif dirYear == year and dirMonth < month:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+        elif dirYear == year and dirMonth == month and dirDay <= day:
+            dirToArchive.append(dir)
+
+    print "Directories to archive,",len(dirToArchive),":"
+
+    for dir in dirToArchive:
+        print dir
+
+    # tar up all the directories
+    tarFile = tarUpFiles(dirToArchive)
+
+    # archive and delete files
+    archiveFiles(tarFile,dirToArchive)
+
+# search for any file
+elif options.filedays >= 0:
+    if options.verbose:
+        print "[verbose] Using filedays option"
+
+    print "filedays options not supported yet."
+    #print "Looking for any file older than", options.filedays, "in", str(options.path)
+    #print "/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","1","-daystart","-atime","+"+str(options.filedays),"-mtime","+"+str(options.filedays)
+    #print
+    
+    ## run the find command to look for files older than options.filedays
+    #p = subprocess.Popen(["/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","1","-daystart","-atime","+"+str(options.filedays),"-mtime","+"+str(options.filedays)],stdout=subprocess.PIPE)
+    #(out,err) = p.communicate()
+
+    #print out
+    #listOut = out.split()
+    #print len(listOut), "files to be archived"
+# no day or month option given
+else:
+    print "No day or month given, path is", options.path
+
+
+
+# Michael Mason
+# HPC-3
+# updated 3/18/13
+
+import os
+import time
+import sys
+from optparse import OptionParser
+import subprocess
+import tarfile
+import shutil
+import datetime
+
+# check if only one options is set
+def oneSet(month, day, fileday):
+    #print "oneSet: ", month, day, fileday
+    # only month is set
+    if month is not None and day is None and fileday == -1:
+        #print "Month True"
+        return True
+    # only day is set
+    elif month is None and day is not None and fileday == -1:
+        #print "Day True"
+        return True
+    # only filedays is set
+    elif month is None and day is None and fileday >= 0:
+        #print "Fileday True"
+        return True
+    # more than one option was set
+    else:
+        return False
+## end oneSet
+
+# create a tar file will all the data from the directories
+def tarUpFiles(dirs):
+    if options.verbose:
+        print "[verbose] Start tar procedure"
+
+    print
+    # if user gave a tar file name and location use that otherwise create one
+    if options.tarLocation != "":
+        tarFileName = options.tarLocation
+    else:
+        tarFileName = "/tmp/gzTarFile-" + str(int(time.time())) + ".tar.gz"
+
+    print "Creating tar file", tarFileName, "This may take a few minutes..."
+
+    if options.dryRun:
+        print "This is a Dry-Run no tar file will be created!"
+        if options.verbose:
+            print "[verbose] The file", tarFileName, "would have been created."
+            print "[verbose] The following files would have been added to the tarfile:"
+            for dir in dirs:
+                print dir,
+            print
+    else:
+        # create the tar file
+        try:
+            tar = tarfile.open(tarFileName, "w:gz")
+        except:
+            print "Error creating tar file"
+            return None
+
+        if options.verbose:
+            print "[verbose] tar file has been opened"
+
+        # archive each file
+        for dir in dirs:
+            try:
+                tar.add(dir)
+            except:
+                print "Error adding file to tar file:", dir
+                print "This may be a permissions problem."
+                print "Stopping tar file creation. No files will be deleted or archived!"
+                return None 
+            else:
+                print "files add to tar from:", dir
+
+        if options.verbose:
+            print "[verbose] Done adding files to the tar."
+
+        # close the tar file
+        try:
+            tar.close()
+        except:
+            print "Error closing tar file. No files will be deleted or archived!"
+            return None
+
+        if options.verbose:
+            print "[verbose] Tar file has been closed."
+
+    # tar file is made return it's name
+    print "Tar file done."
+    return tarFileName
+## end tarUpFiles
+
+def archiveFiles(tarFile,dirs):
+    if options.verbose:
+        print "[verbose] Start archive procedure"
+    print
+
+    if options.dryRun:
+        print "This is a Dry-Run files will not be archived!"
+        if options.verbose:
+            print "[verbose] Would have stored", str(tarFile), "to", str(options.HPSSLocation)
+            if options.keepTarfile:
+                print "[verbose] Would not have deleted the tar file:", str(tarFile)
+            else:
+                print "[verbose] Would have deleted the tar file:", str(tarFile)
+            if options.delFiles:
+                print "[verbose] Would have deleted the following directories:"
+                for dir in dirs:
+                    print "[verbose] Would have deleted:",dir
+            else:
+                print "[verbose] Would not have deleted any directories."
+    else:
+        # if the tar file was created archive it
+        if tarFile is None:
+            print "No tar file, cannot archive or delete files."
+        else:
+            # archive but don't delete the tar file
+            if options.keepTarfile:
+                psiLine = ["psi","store",str(tarFile) + ":" + str(options.HPSSLocation) + str(tarFile.split('/')[-1])]
+            # archive and delete the tar file
+            else:
+                psiLine = ["psi","store","--rm",str(tarFile) + ":" + str(options.HPSSLocation) + str(tarFile.split('/')[-1])]
+            if options.verbose:
+                print "[verbose] psi options:", str(psiLine)
+                print "[verbose] running psi"
+            # run the psiLine
+            p = subprocess.Popen(psiLine,stdout=subprocess.PIPE)
+            (psiOut,psiErr) = p.communicate()
+            if psiOut is not None:
+                print "psi output: ", psiOut
+            if psiErr is not None:
+                print "psi error: ", psiErr 
+            if options.verbose:
+                print "[verbose] Done with psi."
+            # delete files that were archived
+            if options.delFiles:
+                print "Deleting directories, this may take a few minutes..."
+                for dir in dirs:
+                    print "Deleting:", dir, ". . .",
+                    try:
+                        shutil.rmtree(dir)
+                    except:
+                        print "! ! Error deleting"
+                    else:
+                        print ". . Deleted"
+            else:
+                print "No files deleted."
+## end archiveFiles
+
+
+# get username, UID and host
+try:
+    username = os.environ['USER']
+except:
+    print "Error getting environment information, username."
+    sys.exit(1)
+defaultPath = "/usr/projects/splunk/results/" + str(username)
+
+
+# argument parsing setup 
+usage = "usage: %prog [options]"
+parser = OptionParser(usage)
+parser.add_option("-m", "--months", action="store", type="string", dest="months", 
+                  help="archive gazebo format directories YYYY-MM older than X months")
+parser.add_option("-d", action="store", type="string", dest="days", 
+                  help="archive gazebo format directories YYYY-MM-DD older than X days, or use the word today for today's date")
+parser.add_option("--Days", action="store", type="string", dest="DaysDiff", default="0", 
+                  help="offset -d or -m by X number of days, either + or -.")
+parser.add_option("-f", "--filedays", action="store", type="int", dest="filedays", default=-1, 
+                  help="archive any file older than X days")
+parser.add_option("-p", "--path", action="store", type="string", dest="path", default=defaultPath, 
+                  help="starting path to look for gazebo files to archive, default="+defaultPath)
+parser.add_option("-n", "--noDelete", action="store_false", dest="delFiles", default=True, 
+                  help="use this option to NOT delete the files that will be archived, the default is to delete the files that will archive.")
+parser.add_option("-k", "--keepTarfile", action="store_true", dest="keepTarfile", default=False, 
+                  help="use this option to NOT delete the tarfile after it is archived, by default it will be deleted.")
+parser.add_option("-l", "--TarfileLocation", action="store", dest="tarLocation", default="", 
+                  help="Location and name of the (temporary) tarfile, default is /tmp/gzTarFile-EPOCHTIME.tar.gz.  Note use -k to keep the tarfile after archive.")
+parser.add_option("-s", "--HPSSLocation", action="store", dest="HPSSLocation", default="/hpss/gazebo/", 
+                  help="Location (directory) to store tarfile on HPSS, default is /hpss/gazebo.  Note use -k to keep the tarfile after archive.")
+parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False, 
+                  help="Print every action in detail.")
+parser.add_option("--dry-run", action="store_true", dest="dryRun", default=False, 
+                  help="Run through the steps but do not actually do anything, can be used with -v.")
+
+
+# parse options
+(options, args) = parser.parse_args()
+
+#print options
+
+# user can use months or days or filedays but only one
+if not oneSet(options.months, options.days, options.filedays):
+    print "Error: Please only use either months, days or filedays but only one."
+    sys.exit(1)
+# look for YYYY-MM formated gazebo directories
+elif options.months is not None:
+    if options.verbose:
+        print "[verbose] Using month option"
+    # parse the input
+    try:
+        year = options.months.split("-")[0]
+        month =  options.months.split("-")[1]
+    except:
+        print "Error parsing months input, format YYYY-MM given:", options.months
+        sys.exit(1)
+
+    if options.verbose:
+        print "[verbose] year month =",year,month
+        print "[verbose] Looking for directories older than", options.months ,"in",str(options.path) + "/*/gzshared"
+
+    # these are the options to send to find
+    findList = ["/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","4","-maxdepth","4","-type","d"]
+
+    if options.verbose:
+        print "[verbose] find options =",findList
+        print
+
+    # run the find command to look for directories older than options.months
+    p = subprocess.Popen(findList,stdout=subprocess.PIPE)
+    (out,err) = p.communicate()
+
+    if options.verbose:
+        print "[verbose] find output:"
+        print out
+
+    listOut = out.split()
+
+    if options.verbose:
+       print "[verbose] ", len(listOut), "directories found"
+    
+    dirToArchive = []
+    # parse the directories
+    for dir in listOut:
+        try:
+            dirList = dir.split("/")
+            dirYear = dirList[9].split("-")[0]
+            dirMonth = dirList[9].split("-")[1]
+        except:
+            print "Warning: parse error, expected YYYY-MM directory will not be archived:",dir
+        # make sure the year and month are less than or equal to the one you want
+        if dirYear < year:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+        elif dirYear == year and dirMonth <= month:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+
+    print "Directories to archive,",len(dirToArchive),":"
+
+    for dir in dirToArchive:
+        print dir
+
+    # tar up all the directories
+    tarFile = tarUpFiles(dirToArchive)
+
+    # archive and delete files
+    archiveFiles(tarFile,dirToArchive)
+
+elif options.days is not None:
+    if options.verbose:
+        print "[verbose] Using day option"
+    # parse the input
+    if options.days.lower() == "today":
+        today = datetime.date.today()
+        year = today.year
+        month = today.month
+        day = today.day
+    else:
+        try:
+            year = options.days.split("-")[0]
+            month =  options.days.split("-")[1]
+            day = options.days.split("-")[2]
+        except:
+            print "Error parsing days input, format YYYY-MM-DD or \"today\" given:", options.days
+            sys.exit(1)
+
+    if options.verbose:
+        print "[verbose] Before --Days year month day =",year,month,day
+
+    # if --Days is used then apply that offset first
+    originalDate = datetime.date(int(year),int(month),int(day))
+    DaysOffset = datetime.timedelta(days=int(options.DaysDiff))
+    newDate = originalDate + DaysOffset
+    year = newDate.year
+    month = newDate.month
+    day = newDate.day
+
+    if options.verbose:
+        print "[verbose] After --Days year month day =",year,month,day
+
+    if options.verbose:
+        print "[verbose] Looking for directories older than", year, "-", month, "-", day ,"in",str(options.path) + "/*/gzshared"
+
+    # find option list
+    findList = ["/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","5","-maxdepth","5","-type","d"]
+
+    if options.verbose:
+        print "[verbose] Find options ",findList
+
+    # run the find command to look for directories older than options.months
+    p = subprocess.Popen(findList,stdout=subprocess.PIPE)
+    (out,err) = p.communicate()
+
+    if options.verbose:
+        print "[verbose] find output:"
+        print out
+
+    listOut = out.split()
+    
+    if options.verbose:
+        print "[verbose] ", len(listOut), "directories found"
+
+    dirToArchive = []
+    # parse the directories
+    for dir in listOut:
+        try:
+            dirList = dir.split("/")
+            dirYear = dirList[10].split("-")[0]
+            dirMonth = dirList[10].split("-")[1]
+            dirDay = dirList[10].split("-")[2]
+        except:
+            print "Warning: parse error, expected YYYY-MM-DD directory will not be archived:",dir
+        # make sure the year, month and day are less than or equal to the one you want
+        if dirYear < year:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+        elif dirYear == year and dirMonth < month:
+            #print "Archive:",dir,"year month",dirYear,dirMonth
+            dirToArchive.append(dir)
+        elif dirYear == year and dirMonth == month and dirDay <= day:
+            dirToArchive.append(dir)
+
+    print "Directories to archive,",len(dirToArchive),":"
+
+    for dir in dirToArchive:
+        print dir
+
+    # tar up all the directories
+    tarFile = tarUpFiles(dirToArchive)
+
+    # archive and delete files
+    archiveFiles(tarFile,dirToArchive)
+
+# search for any file
+elif options.filedays >= 0:
+    if options.verbose:
+        print "[verbose] Using filedays option"
+
+    print "filedays options not supported yet."
+    #print "Looking for any file older than", options.filedays, "in", str(options.path)
+    #print "/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","1","-daystart","-atime","+"+str(options.filedays),"-mtime","+"+str(options.filedays)
+    #print
+    
+    ## run the find command to look for files older than options.filedays
+    #p = subprocess.Popen(["/bin/find",str(options.path),"-ignore_readdir_race","-mindepth","1","-daystart","-atime","+"+str(options.filedays),"-mtime","+"+str(options.filedays)],stdout=subprocess.PIPE)
+    #(out,err) = p.communicate()
+
+    #print out
+    #listOut = out.split()
+    #print len(listOut), "files to be archived"
+# no day or month option given
+else:
+    print "No day or month given, path is", options.path
+
+
