@@ -359,15 +359,11 @@ sub gleanResults {
       $trend_values = "";
       $run_values = "";
       for ($i=0; $i<@logdata; $i++) {
-         if ( $logdata[$i] =~ /$trend_data_symbol/ ) {
-            # save the trend_data value
-            $logdata[$i] =~ s/\.*$trend_data_symbol//;
-   	    $trend_values .= "$logdata[$i]";
-         }
-         if ( $logdata[$i] =~ /$trend_units_symbol/ ) {
-            # save the trend_data units
-            $logdata[$i] =~ s/$trend_units_symbol//;
-   	    $trend_values .= "units=$logdata[$i]";
+         # save the trend_data name and value
+         if ( $logdata[$i] =~ /$trend_data_symbol\s*(.+)/ ) {
+            my $tdnv = $1;
+            chomp $tdnv;
+   	    $trend_values .= $tdnv . "\n";
          }
 
          if ( $logdata[$i] =~ /$run_time_symbol/ ) {
