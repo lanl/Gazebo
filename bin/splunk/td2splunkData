@@ -80,7 +80,7 @@ use strict;
 
 use Getopt::Std;
 our %opt;
-&getopts("dhf:", \%opt);
+&getopts("dh:", \%opt);
 
   # print help if requested
   if ( $opt{h}) { usage(); exit; }
@@ -114,6 +114,7 @@ our %opt;
     open( RF, ">>$ENV{'GZ_RESULTSDIR'}/splunkdata.log");
   }
 
+  my $resrecord = "";
   my $date = "";
   my $time = "";
   my $edate = "";
@@ -200,8 +201,8 @@ our %opt;
 
       # get results  
       # save the first pass, unless a fail then save the first one of those 
-      if( /^<result> |^<results> / ) {
-         my $tmpStr = $';
+      if (/<result\w{0,1}>\s*(.+)/){
+         my $tmpStr = $1;
          $tmpStr =~ s/[,:].+$//; # remove any text after pass/fail
          if ($results =~ /unknown/) {
            $results = $tmpStr;
@@ -213,15 +214,24 @@ our %opt;
          next;
       }
 
-      # re-format trend data from Gazebo output into splunk data 
-      if ( /^\s*<td>\s+(.*)/ ) {
+      # process test specific data types
+      #
+      # <td> standard trend data which is formatted as "name value [units]"
+      #    is included with the common data in the output record.
+      #
+      # <sftd> splunk-formatted trend-data.  Each of these lines are
+      #     added as is into the splunk data file(s) as separate records EXCLUDING
+      #     the common output data.
+
+      # re-format trend data from Gazebo output into splunk key-value pair data 
+      if ( /<td>\s+(.*)/ ) {
         $td_name = "";
         $td_val = "";
         $td_units = "";
 
         my @td = split(" ", $1);
         $td_name = $td[0];
-        $td_name =~ s/-/_/g;
+        $td_name =~ s/-/_/g; # no "-"s allowed in std. trend data
         $td_val = $td[1];
         $td_units = $td[2];
 
@@ -232,6 +242,15 @@ our %opt;
         }
         next;
       }
+
+      if ( /<sftd>\s+(.*)/ ) {
+        print SD "$1\n";
+        if ( $ENV{'GZ_RESULTSDIR'} ) {
+          print RF "$1\n";
+        }
+        next;
+      }
+
 
       # get end time to use in splunk data 
       if( /^<end> / ) {
@@ -246,19 +265,20 @@ our %opt;
 
     # no dashes in values
     chop $td_list;
-    my $rl;
-    if ($mn ne "") {
-      $rl = qq($date $time EndDate=$edate EndTime=$etime TestName=$tn JobId=$job_id MachineName=$mn SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
-    } else {
-      $rl = qq($date $time EndDate=$edate EndTime=$etime TestName=$tn JobId=$job_id SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
-    }
-    print SD $rl;
+
+    # put together the result line or record
+      if ($mn ne "") {
+        $resrecord = qq($date $time EndDate=$edate EndTime=$etime TestName=$tn JobId=$job_id MachineName=$mn SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
+      } else {
+        $resrecord = qq($date $time EndDate=$edate EndTime=$etime TestName=$tn JobId=$job_id SegmentName=$sn NumNodes=$nn NumCores=$nc ParamList="$pl" Results=$results $td_list NodeList="$nl"\n);
+      }
+    print SD $resrecord;
     close( LOG );
     close( SD );
     # these next lines will only work in the context of a real Gazebo job, so unless the
     # GZ_RESULTSDIR is defined don't try to run this.
     if ( $ENV{'GZ_RESULTSDIR'} ) {
-      print RF $rl;
+      print RF $resrecord;
       close( RF );
     }
 
@@ -268,10 +288,9 @@ sub usage {
 
   print "\n\n";
   print <<usage_info;
-usage: $prog [options] -l <log dir> 
+usage: $prog [options] <log dir> 
           -d print debugging info 
           -h print this help screen
-          -l <log directory> 
 usage_info
   print "\n\n";
 }
