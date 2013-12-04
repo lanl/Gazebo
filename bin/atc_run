@@ -2855,11 +2855,13 @@ sub test_line_ok {
 
     # non-null values must exist for each pairing
     unless ( $valid_pairs == $pairs ) {
+      print "  Error: NULL component for any key and/or value not permitted\n";
       return 0;
     }
 
     # must get values for the required fields
     unless ( $req_found == 4 ) {
+      print "  Error: 'name:=, nodes:=, pes:=, and tl:='  must all contain values\n";
       return 0;
     }
 
