@@ -1,0 +1,75 @@
+#!/bin/tcsh
+
+# Job Failure Analyzer 
+#
+# Utility used to attempt to do a quick failure analysis of jobs that did not finish or failed.
+
+# Knowledge base of failure types is somewhat fluid and will probably vary from one platform to the next.
+
+# example usage
+# atc_results -S 17:00:00 -s 2013-11-19 -i -f | grep gzshared | xargs | ${GZBIN}/util/jfa 
+
+# output: file called jobErrs."date" 
+
+
+# work to do...
+# possibly replace findgrep with "grep -r". findgrep is nice, but not everywhere
+# 
+
+# first, make sure all the DRM files are moved to the appropriate results directories
+${GZBIN}/atc_clean
+
+  set td = `date "+%F.%T"`
+  set outfile = ${GZHOME}/jobErrs.$td
+  echo "Writing $outfile"
+  echo "-- created @ $td --" >> ${outfile}
+
+foreach d ($<)
+  echo "searching $d"
+  cd $d 
+
+  echo "" >> ${outfile}
+  echo "--> $d" >> ${outfile}
+
+  echo "Job Attributes:" >> ${outfile}
+  egrep -q "<start>" $d/*.log  >> ${outfile} 
+  egrep -q "<end>" $d/*.log  >> ${outfile} 
+  egrep -q "<nodes>" $d/*.log >> ${outfile} 
+
+  echo "Failure or Incomplete Reason:" >> ${outfile}
+
+  /usr/bin/findgrep -n *.log  -c "FAIL" | sed -e 's/^.*<results>//' | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "No route to host" | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "Command not found" | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "code 1099" | awk '{printf ("  - MOM communication error\n")}' | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "error while loading shared libraries" | awk '{printf ("  - Module load problem\n")}' | uniq  >> ${outfile}
+
+  /usr/bin/findgrep . -c "RETRY EXCEEDED ERROR" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {printf ("%s %s to %s\n", jobid, $4, $6)}}' | grep "localdomain to mu" | sort -n | uniq | awk -F '.' '{printf("%s %s %s\n", $2, $(NF-1), $NF)}' | awk '{split( $1, a, "__") ; printf("%s Retry Exceeded Error to %s\n",  a[3], $6)}' | uniq >> ${outfile}
+
+  /usr/bin/findgrep . -c "TIME LIMIT" | sort -n | awk -F '.' '{printf("%s\n", $2)}' | awk '{split( $1, a, "__") ; if ( NF > 0 ) printf("%s Time Limit Exceeded\n",  a[3] )}' >> ${outfile}
+
+ /usr/bin/findgrep . -c  "CANCELLED AT" | sort -n >> ${outfile}
+# /usr/bin/findgrep . -c  "CANCELLED AT" | sort -n | awk -F '.' '{printf("%s\n", $2)}' | awk '{split( $1, a, "__") ; if ( NF > 0 ) printf("%s Job canceled by admin\n",  a[3] )}' >> ${outfile}
+
+  /usr/bin/findgrep -c "oob_tcp" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {split( $2, a, ".") ; printf ("%s %s %s %s %s\n", jobid, $4, $5, $6,  a[1])}}' |  awk '{split( $1, a, "__") ; printf("%s %s %s %s %s\n", a[3], $2, $3, $4, substr( $5, 2 ) )}'  | uniq >> ${outfile}
+
+#  /usr/bin/findgrep -c "NODE FAILURE" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {split( $2, a, ".") ; printf ("%s %s %s %s %s\n", jobid, $4, $5, $6,  a[1])}}' | awk '{split( $1, a, "__") ; printf("%s %s due to node failure at %s\n", a[3], $4, substr( $5, 8, 6 ) )}' | sort -n | uniq  >> ${outfile}
+  /usr/bin/findgrep -c "NODE FAILURE" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {split( $2, a, ".") ; printf ("%s %s %s %s %s\n", jobid, $4, $5, $6,  a[1])}}' | awk '{split( $1, a, "__") ; printf("%s %s due to node failure\n", a[3], $4 )}' | sort -n | uniq  >> ${outfile}
+
+  /usr/bin/findgrep . -c "daemon did not report back when launched" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {printf ("%s %s\n", jobid, $2 )}}' | awk '{split( $1, a, "__") ; printf("%s mpi daemon did not report back when launched %s\n", a[3], $2  )}' | sort -n | uniq >> ${outfile}
+
+  /usr/bin/findgrep . -c "EXECUTABLE EXPIRED" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {printf ("%s %s %s\n", jobid, $2, $3)}}' | sort -n | uniq | awk -F '.' '{printf("%s %s %s\n", $2, $(NF-1), $NF)}' | awk '{split( $1, a, "__") ; printf("%s %s %s\n",  a[3], $4, "license expired") }' | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "joblogfile missing" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {split( $2, a, ".") ; printf ("%s %s %s %s %s\n", jobid, $4, $5, $6,  a[1])}}' | awk '{split( $1, a, "__") ; printf("%s %s %s\n", a[3], $2, $3 )}'  | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "PSM EP connect" | awk '{if (NF==1) {jobid=$1} else if (NF>1) {split( $2, a, ".") ; printf ("%s %s %s %s %s\n", jobid, $4, $5, $6,  a[1])}}' | awk '{split( $1, a, "__") ; printf("%s %s\n", a[3], "PSM EP connect error")}' | uniq >> ${outfile}
+
+  echo "" >> ${outfile}
+
+end
+
+exit
