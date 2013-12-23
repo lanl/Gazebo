@@ -1,14 +1,16 @@
 #!/usr/bin/perl
 
+(my $prog = $0) =~ s/.*\///;
+
 #  ###################################################################
 #
 #  Disclaimer and Notice of Copyright 
 #  ==================================
 #
-#  Copyright (c) 2012, Los Alamos National Security, LLC
+#  Copyright (c) 2013, Los Alamos National Security, LLC
 #  All rights reserved.
 #
-#  Copyright 2012. Los Alamos National Security, LLC. 
+#  Copyright 2013. Los Alamos National Security, LLC. 
 #  This software was produced under U.S. Government contract 
 #  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL), 
 #  which is operated by Los Alamos National Security, LLC for 
@@ -55,8 +57,9 @@
 
 
 #  - create cvs type output from gazebo logs with the values of field names
-#   or tags, that users request (in the order specified)
+#   or tags that are matched (in the order specified)
 #
+
 use strict;
 use Getopt::Std;
 
@@ -154,8 +157,7 @@ my $header_key;
 my @tags = split ( ",", $tag_list);
 my @lines = split ( "\n", $input);
 
- # build a header_key and data_line for each since there are somtimes 
- # multiple instances of a tag  ( results and td, for instance)
+# build a header_key and then the data_line for each tag matched.
 
   $header_key = "";
   $data_line = "";
@@ -163,6 +165,8 @@ my @lines = split ( "\n", $input);
     foreach $line (@lines) {
       if ($line =~ /$tag/) { 
 	$line =~ s/<.*>//;
+        $line =~ s/\s+$//;
+
         $header_key = $header_key . $tag . ",";
         $data_line = $data_line . "$line" . ",";
       }
@@ -182,7 +186,7 @@ sub usage {
     print "\n\n";
     print "Get tag '<>' values from gazebo log file(s) and print as csv type output  \n";
     print " *A key is provided for each line as some tags are repeated \n";
-    print "usage: atc_results [<options...>] (-p and/or -f) | $0 [-t tag1,tag2,...] or [-q]  \n";
+    print "usage: atc_results [<options...>] (-p and/or -f) | $ENV{'GZBIN'}/util/$prog [-t tag1,tag2,...] or [-q]  \n";
     print "              -h help \n";
     print "              -q 'query and show the tag/field names available'\n";
     print "              -t 'comma separted list of tag names that you want extracted'\n";
