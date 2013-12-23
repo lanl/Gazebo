@@ -7,7 +7,7 @@
 #  Disclaimer and Notice of Copyright 
 #  ==================================
 #
-#  Copyright (c) 2013, Los Alamos National Security, LLC
+#  Copyright (c) 2012, Los Alamos National Security, LLC
 #  All rights reserved.
 #
 #  Copyright 2013. Los Alamos National Security, LLC. 
@@ -55,8 +55,7 @@
 #
 #  ###################################################################
 
-
-#  - create cvs type output from gazebo logs with the values of field names
+#   create cvs type output from gazebo logs with the values of field names
 #   or tags that are matched (in the order specified)
 #
 
@@ -65,7 +64,7 @@ use Getopt::Std;
 
 our %options=();
 
-getopts("t:hqv",\%options);
+getopts("t:hqrv",\%options);
 
 # print usage if h option set
 if ($options{h}) { usage(); exit; }
@@ -75,6 +74,7 @@ my $sl;
 my $header;
 my $i;
 my $cmd;
+my $header_printed = 0;
 
 # determine search type
 
@@ -157,7 +157,7 @@ my $header_key;
 my @tags = split ( ",", $tag_list);
 my @lines = split ( "\n", $input);
 
-# build a header_key and then the data_line for each tag matched.
+ # build a header_key and then the data_line for each tag matched 
 
   $header_key = "";
   $data_line = "";
@@ -168,7 +168,7 @@ my @lines = split ( "\n", $input);
         $line =~ s/\s+$//;
 
         $header_key = $header_key . $tag . ",";
-        $data_line = $data_line . "$line" . ",";
+        $data_line = $data_line . $line . ",";
       }
     }
   }
@@ -176,19 +176,21 @@ my @lines = split ( "\n", $input);
   chop $data_line;
   $data_line =~ s/^ //;
   $data_line =~ s/, /,/g;
-  print "$header_key\n";
+  print "$header_key\n" if ( !$header_printed | $options{r});
   print "$data_line\n";
 
+
+  $header_printed = 1;
 }
 
 sub usage {
 
     print "\n\n";
-    print "Get tag '<>' values from gazebo log file(s) and print as csv type output  \n";
-    print " *A key is provided for each line as some tags are repeated \n";
     print "usage: atc_results [<options...>] (-p and/or -f) | $ENV{'GZBIN'}/util/$prog [-t tag1,tag2,...] or [-q]  \n";
+    print " Get tag '<>' or field values from gazebo log file(s) and print as csv type output  \n";
     print "              -h help \n";
     print "              -q 'query and show the tag/field names available'\n";
+    print "              -r 'header key in cvs output is repeated for each new data line '\n";
     print "              -t 'comma separted list of tag names that you want extracted'\n";
     print "\n\n";
 
