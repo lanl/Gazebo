@@ -221,7 +221,9 @@ our %opt;
       #
       # <sftd> splunk-formatted trend-data.  Each of these lines are
       #     added as is into the splunk data file(s) as separate records EXCLUDING
-      #     the common output data.
+      #     most of the common output data which is printed to a separate line.
+      #     This is used for jobs that need to generate multiple sub event data
+      #     within a single job allocation.
 
       # re-format trend data from Gazebo output into splunk key-value pair data 
       if ( /<td>\s+(.*)/ ) {
@@ -244,9 +246,9 @@ our %opt;
       }
 
       if ( /<sftd>\s+(.*)/ ) {
-        print SD "$1\n";
+        print SD "$1 JobId=$job_id\n";
         if ( $ENV{'GZ_RESULTSDIR'} ) {
-          print RF "$1\n";
+          print RF "$1 JobId=$job_id\n";
         }
         next;
       }
