@@ -6,10 +6,10 @@
 #  Disclaimer and Notice of Copyright
 #  ==================================
 #
-#  Copyright (c) 2013, Los Alamos National Security, LLC
+#  Copyright (c) 2014, Los Alamos National Security, LLC
 #  All rights reserved.
 #
-#  Copyright 2013. Los Alamos National Security, LLC.
+#  Copyright 2014. Los Alamos National Security, LLC.
 #  This software was produced under U.S. Government contract
 #  DE-AC52-06NA25396 for Los Alamos National Laboratory (LANL),
 #  which is operated by Los Alamos National Security, LLC for
@@ -87,10 +87,14 @@ chomp $today;
 
   my %numVals = ();
   my %tdVal = ();
+  my %tdValList = ();
   my %tdUnits = ();
   my %min = ();
   my %max = ();
   my %aggTotal = ();
+  my %aggTotalList = ();
+  my %maxaggTotal = ();
+  my %minaggTotal = ();
   my $testname = "";
 
 
@@ -106,9 +110,13 @@ chomp $today;
     $tmpstr =~ s/\s+$//; #remove trailing spaces
     my @tdstuff = split( " ", $tmpstr[1]);
     chomp $tdstuff[1];
+    next unless is_numeric($tdstuff[1]);
      #  tdstuff[0] = trend data name,  tdstuff[1] = trend data value
 #print "  add - $testname) $tdstuff[0] - $tdstuff[1]\n";
     $tdVal{$testname}{$tdstuff[0]} += $tdstuff[1]; 
+    push ( @{$tdValList{$testname}{$tdstuff[0]} }, $tdstuff[1]);
+
+    # save max and mins
     if (! defined $min{$testname}{$tdstuff[0]}) {
         $min{$testname}{$tdstuff[0]} = $tdstuff[1];
     } else {
@@ -116,7 +124,6 @@ chomp $today;
         $min{$testname}{$tdstuff[0]} = $tdstuff[1]; 
       }
     }
-
     if (! defined $max{$testname}{$tdstuff[0]}) {
         $max{$testname}{$tdstuff[0]} = $tdstuff[1];
     } else {
@@ -134,32 +141,83 @@ chomp $today;
 
     # process the average of a common set of trend data names
     if ( $tdstuff[0] =~ /(.+)\+(.+)/ )  {
-     chomp $1; # common part
-     chomp $2; # unique part
-     print "com - $1, diff - $2\n";
-     if (exists $numVals{$testname}{$1}) { 
-        $numVals{$testname}{$1}++; 
-        $aggTotal{$testname}{$1} += $tdstuff[1];  
+     chomp $1; # common part before the "+" sign
+     chomp $2; # unique part after the "+" sign
+#print "com - $1, diff - $2, val - $tdstuff[1]\n";
+     $numVals{$testname}{$1} += 1; 
+     $aggTotal{$testname}{$1} += $tdstuff[1];  
+     push ( @{$aggTotalList{$testname}{$1} }, $tdstuff[1]);
+
+
+     if (! defined $minaggTotal{$testname}{$1}) {
+           $minaggTotal{$testname}{$1} = $tdstuff[1];
      } else {
-        $numVals{$testname}{$1} = 1; 
-        $aggTotal{$testname}{$1} += $tdstuff[1];  
+       if ($minaggTotal{$testname}{$1} > $tdstuff[1]) {
+           $minaggTotal{$testname}{$1} = $tdstuff[1];
+       }
      }
-     
-    }
+     if (! defined $maxaggTotal{$testname}{$1}) {
+           $maxaggTotal{$testname}{$1} = $tdstuff[1];
+     } else {
+       if ($maxaggTotal{$testname}{$1} < $tdstuff[1]) {
+           $maxaggTotal{$testname}{$1} = $tdstuff[1];
+       }
+     }
 
-  }
+    } # end process common aggreate values
 
+  } # end read line
+
+my %MeanFixedName = ();
+my %VarFixedName = ();
+my %MeanDynName = ();
+my %VarDynName = ();
+my $avg = 0;
 foreach my $tn (sort keys %tdVal) {
     print "$tn):\n";
+
+    # calculate Means
     while (my ($key, $value) = each %{$tdVal{$tn} } ) {
-        $value = $value / $numVals{$tn}{$key};
-        print "\t $key = $value $tdUnits{$tn}{$key} (entries - $numVals{$tn}{$key}, min - $min{$tn}{$key}, max - $max{$tn}{$key})\n";
+        my $mean  = $value / $numVals{$tn}{$key};
+        $MeanFixedName{$tn}{$key} = $mean;
+        #print "\t $key = $mean $tdUnits{$tn}{$key} (entries - $numVals{$tn}{$key}, min - $min{$tn}{$key}, max - $max{$tn}{$key}, stDev - $stdev)\n";
     }
-    # print the aggregate average of any common names
     while (my ($key, $value) = each %{$aggTotal{$tn} } ) {
-      my $avg = $value / $numVals{$tn}{$key};
-      print "\t avg_aggreate_$key = $avg (entries - $numVals{$tn}{$key})\n";
+      $avg = $value / $numVals{$tn}{$key};
+      $MeanDynName{$tn}{$key} = $avg;
+      #print "\t avg_aggreate_$key = $avg (entries - $numVals{$tn}{$key}, min - $minaggTotal{$tn}{$key}, max - $maxaggTotal{$tn}{$key})\n";
     }
+
+    # calc standard Devs
+    foreach my $k (sort keys %{$tdVal{$tn} } ) {
+      foreach $val (@{$tdValList{$tn}{$k} }) {
+        #print (" my val - $val\n");
+        $VarFixedName{$tn}{$k} += (($val - $MeanFixedName{$tn}{$k}) ** 2);  
+      }
+      $stdev = sqrt( $VarFixedName{$tn}{$k} / $numVals{$tn}{$k});
+      #print " Variance - $VarFixedName{$tn}{$k}, stDev - $stdev\n";
+      print "\t $k = $MeanFixedName{$tn}{$k} $tdUnits{$tn}{$k} (entries - $numVals{$tn}{$k}, min - $min{$tn}{$k}, max - $max{$tn}{$k}, stDev - $stdev)\n";
+    }
+
+    foreach my $k (sort keys %{$aggTotal{$tn} } ) {
+      foreach $val (@{$aggTotalList{$tn}{$k} }) {
+        #print (" my val - $val\n");
+        $VarDynName{$tn}{$k} += (($val - $MeanDynName{$tn}{$k}) ** 2);  
+      }
+      $stdev = sqrt( $VarDynName{$tn}{$k} / $numVals{$tn}{$k});
+      #print " Variance - $VarDynName{$tn}{$k}, stDev - $stdev\n";
+      #print "\t $k = $MeanDynName{$tn}{$k} $tdUnits{$tn}{$k} (entries - $numVals{$tn}{$k}, min - $min{$tn}{$k}, max - $max{$tn}{$k}, stDev - $stdev)\n";
+      print "\t avg_aggreate_$k = $MeanDynName{$tn}{$k} (entries - $numVals{$tn}{$k}, min - $minaggTotal{$tn}{$k}, max - $maxaggTotal{$tn}{$k}, stDev - $stdev)\n";
+    }
+
+
+}
+
+# subroutine that returns true if item is an integer, float, etc.  Works on sci-notation too)
+sub is_numeric {
+no warnings;
+use warnings FATAL => 'numeric';
+return defined eval { $_[ 0] == 0 };
 }
 
 sub usage {
