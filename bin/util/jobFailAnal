@@ -7,7 +7,9 @@
 # Knowledge base of failure types is somewhat fluid and will probably vary from one platform to the next.
 
 # example usage
-# atc_results -S 17:00:00 -s 2013-11-19 -i -f | grep gzshared | xargs | ${GZBIN}/util/jfa 
+# atc_results -S 17:00:00 -s 2013-11-19 -i -f | grep gzshared | xargs | ${GZBIN}/util/jobFailAnal
+# or use the output from mk-tpl
+# cat gazebo.results.2013-12-05.txt | grep gzshared | xargs | ${GZBIN}/util/jobFailAnal
 
 # output: file called jobErrs."date" 
 
@@ -43,6 +45,8 @@ foreach d ($<)
   /usr/bin/findgrep -c "No route to host" | uniq >> ${outfile}
 
   /usr/bin/findgrep -c "Command not found" | uniq >> ${outfile}
+
+  /usr/bin/findgrep -c "Couldn't connect" | uniq >> ${outfile}
 
   /usr/bin/findgrep -c "code 1099" | awk '{printf ("  - MOM communication error\n")}' | uniq >> ${outfile}
 
